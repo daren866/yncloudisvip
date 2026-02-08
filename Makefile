@@ -1,19 +1,27 @@
-# 适配iOS15+无根越狱的Tweak编译配置
-ARCHS = arm64 arm64e
-TARGET = iphone:clang:15.0:15.0
-INSTALL_TARGET_PROCESSES = YoudaoNote
+# 第一步：引入Theos通用编译规则（必须是第一行，不能改）
+include $(THEOS)/makefiles/common.mk
 
-# 关键：指定无根越狱模式
+# ===================== Tweak核心配置 =====================
+# 插件名称（Tweak专属，绝对不能用TOOL_NAME）
+TWEAK_NAME = YNCloudNoteVIP
+
+# 适配iOS15+无根越狱（核心）
 THEOS_PACKAGE_SCHEME = rootless
 
-# 插件名称（自定义，保持英文）
-TOOL_NAME = YNCloudNoteVIP
+# 编译架构&SDK版本（匹配15.5 SDK，兼容iOS15.0+）
+ARCHS = arm64 arm64e
+TARGET = iphone:clang:15.5:15.0
+INSTALL_TARGET_PROCESSES = YoudaoNote
 
-# 编译源文件与参数
-YNCloudNoteVIP_FILES = Tweak.x
-YNCloudNoteVIP_CFLAGS = -fobjc-arc -Wno-error=deprecated-declarations -Wno-unused-variable
-YNCloudNoteVIP_FRAMEWORKS = Foundation UIKit
-YNCloudNoteVIP_LIBRARIES = hooker
+# ===================== 编译参数 =====================
+# 源文件
+$(TWEAK_NAME)_FILES = Tweak.x
+# 编译标记（ARC模式+关闭无用警告）
+$(TWEAK_NAME)_CFLAGS = -fobjc-arc -Wno-error=deprecated-declarations -Wno-unused-variable
+# 依赖的系统框架
+$(TWEAK_NAME)_FRAMEWORKS = Foundation UIKit
+# 依赖的LibHooker库（无根越狱必需）
+$(TWEAK_NAME)_LIBRARIES = hooker
 
-# Theos路径配置（如果你的Theos不在默认路径，需修改下面的路径）
-# export THEOS=/opt/theos
+# 第二步：引入Tweak专属打包规则（必须最后一行）
+include $(THEOS_MAKE_PATH)/tweak.mk
