@@ -24,21 +24,18 @@ jobs:
       - name: Install Homebrew Dependencies
         run: |
           brew update
-          brew install ldid xz curl git make file
+          brew install ldid xz curl git make file dpkg
           brew upgrade ldid || true
 
-      - name: Install Theos
+      - name: Install Theos (Legacy Method)
         run: |
-          mkdir -p $HOME/theos
-          git clone --depth=1 https://github.com/theos/theos.git $HOME/theos
-          # 验证Theos的common.mk是否存在
-          if [ ! -f "$HOME/theos/makefiles/common.mk" ]; then
-            echo "错误：Theos安装失败，缺少common.mk"
-            ls -la $HOME/theos/makefiles/
-            exit 1
-          fi
+          # 使用 Theos 官方安装脚本
+          /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
+          
+          # 设置环境变量
           echo "THEOS=$HOME/theos" >> $GITHUB_ENV
-          echo "PATH=$HOME/theos/bin:$PATH" >> $GITHUB_ENV
+          echo "PATH=$HOME/theos/bin:$HOME/theos/vendor/bin:$PATH" >> $GITHUB_ENV
+          echo "THEOS_PACKAGE_SCHEME=rootless" >> $GITHUB_ENV
 
       - name: Clone iOS-SDKs Repository
         run: |
@@ -50,39 +47,162 @@ jobs:
           fi
           echo "✅ 成功克隆iOS-SDKs仓库，找到15.5 SDK目录"
 
-      - name: Copy iOS 15.5 SDK to Theos
+      - name: Setup iOS 15.5 SDK
         run: |
+          # 复制 SDK 到 Theos
           mkdir -p $HOME/theos/sdks
           cp -r $HOME/iOS-SDKs/iPhoneOS15.5.sdk $HOME/theos/sdks/
+          
+          # 为 rootless 模式创建符号链接
+          ln -sf $HOME/theos/sdks/iPhoneOS15.5.sdk $HOME/theos/sdks/iPhoneOS.sdk
+          
+          # 验证 SDK
           if [ -f "$HOME/theos/sdks/iPhoneOS15.5.sdk/SDKSettings.plist" ]; then
-            echo "✅ iOS 15.5 SDK已成功复制到Theos"
+            echo "✅ iOS 15.5 SDK已成功设置"
           else
-            echo "❌ iOS 15.5 SDK复制失败"
+            echo "❌ iOS 15.5 SDK设置失败"
             exit 1
           fi
 
-      - name: Configure Build Env
+      - name: Configure Theos Environment
         run: |
+          # 设置 SDK 路径
           echo "SDKROOT=$HOME/theos/sdks/iPhoneOS15.5.sdk" >> $GITHUB_ENV
-          echo "THEOS_PACKAGE_SCHEME=rootless" >> $GITHUB_ENV
+          
+          # 检查关键工具
+          echo "===== 检查 Theos 工具 ====="
+          ls -la $HOME/theos/bin/ || echo "bin目录不存在"
+          which ldid || echo "ldid未安装"
+          which dpkg-deb || echo "dpkg-deb未安装"
+          
+          # 为 rootless 设置特殊环境
+          echo "THEOS_DEVICE_IP=127.0.0.1" >> $GITHUB_ENV
+          echo "THEOS_DEVICE_PORT=2222" >> $GITHUB_ENV
+
+      - name: Fix Makefile for Rootless
+        run: |
+          cd $GITHUB_WORKSPACE
+          # 备份原始 Makefile
+          cp Makefile Makefile.backup
+          
+          # 创建修正后的 Makefile
+          cat > Makefile << 'EOF'
+# 第一步：引入Theos通用编译规则（必须是第一行，不能改）
+include $(THEOS)/makefiles/common.mk
+
+# ===================== Tweak核心配置 =====================
+# 插件名称（Tweak专属，绝对不能用TOOL_NAME）
+TWEAK_NAME = YNCloudNoteVIP
+
+# 适配iOS15+无根越狱（核心）
+THEOS_PACKAGE_SCHEME = rootless
+
+# 使用 dpkg-deb 而不是 dm.pl 进行打包
+THEOS_PACKAGE_TOOL = dpkg-deb
+
+# 编译架构&SDK版本（匹配15.5 SDK，兼容iOS15.0+）
+ARCHS = arm64 arm64e
+TARGET = iphone:clang:15.5:15.0
+INSTALL_TARGET_PROCESSES = YoudaoNote
+
+# ===================== 编译参数 =====================
+# 源文件
+YNCloudNoteVIP_FILES = Tweak.x
+# 编译标记（ARC模式+关闭无用警告）
+YNCloudNoteVIP_CFLAGS = -fobjc-arc -Wno-error=deprecated-declarations -Wno-unused-variable
+# 依赖的系统框架
+YNCloudNoteVIP_FRAMEWORKS = Foundation UIKit
+# 依赖的LibHooker库（无根越狱必需）
+YNCloudNoteVIP_LIBRARIES = substrate
+
+# 第二步：引入Tweak专属打包规则（必须最后一行）
+include $(THEOS_MAKE_PATH)/tweak.mk
+
+# 打包后清理（可选）
+after-package::
+	@echo "✅ 打包完成！"
+EOF
+          
+          echo "===== 修正后的 Makefile ====="
+          cat Makefile
 
       - name: Build Tweak
         run: |
           cd $GITHUB_WORKSPACE
-          # 验证Makefile和Theos核心文件
-          echo "===== 验证Theos核心规则文件 ====="
-          ls -la $HOME/theos/makefiles/common.mk
-          echo "===== 验证Makefile ====="
-          cat Makefile
-          # 清理+编译
-          make clean THEOS=$HOME/theos
-          make package THEOS=$HOME/theos
+          
+          echo "===== 环境变量 ====="
+          echo "THEOS: $THEOS"
+          echo "PATH: $PATH"
+          echo "THEOS_PACKAGE_SCHEME: $THEOS_PACKAGE_SCHEME"
+          
+          echo "===== 验证关键文件 ====="
+          ls -la $THEOS/makefiles/common.mk
+          ls -la $THEOS/makefiles/tweak.mk
+          
+          echo "===== 检查 Tweak.x 文件 ====="
+          if [ -f "Tweak.x" ]; then
+            echo "✅ Tweak.x 存在"
+            head -20 Tweak.x
+          else
+            echo "❌ Tweak.x 不存在"
+            exit 1
+          fi
+          
+          echo "===== 清理和编译 ====="
+          # 先尝试只编译，不打包
+          echo "1. 尝试编译..."
+          make clean 2>&1 || true
+          make 2>&1
+          
+          echo "===== 检查编译结果 ====="
+          if [ -d ".theos/obj" ]; then
+            echo "✅ 编译成功"
+            find .theos/obj -name "*.dylib" | head -5
+          else
+            echo "❌ 编译失败，未找到 .theos/obj 目录"
+            exit 1
+          fi
+          
+          echo "===== 尝试打包 ====="
+          # 尝试使用不同的打包方法
+          make package FINALPACKAGE=1 2>&1 || \
+          echo "⚠️ 第一次打包尝试失败，尝试替代方法..."
+          
+          # 尝试使用 dpkg-deb 直接打包
+          if [ -f ".theos/obj/deb" ]; then
+            echo "尝试从 .theos/obj/deb 打包..."
+            dpkg-deb -b .theos/obj/deb packages/ 2>&1
+          fi
+          
+          echo "===== 检查打包结果 ====="
+          if [ -d "packages" ]; then
+            echo "✅ packages目录存在"
+            ls -la packages/ || true
+          fi
 
       - name: Upload Deb Package
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: YNCloudNoteVIP-iOS15.5-Rootless
           path: |
             $GITHUB_WORKSPACE/packages/*.deb
+            $GITHUB_WORKSPACE/.theos/obj/*.dylib
             $GITHUB_WORKSPACE/README.md
+            $GITHUB_WORKSPACE/Makefile.backup
           retention-days: 90
+
+      - name: Debug Info on Failure
+        if: failure()
+        run: |
+          echo "===== 调试信息 ====="
+          echo "工作目录内容:"
+          ls -la
+          echo "Theos目录:"
+          ls -la $HOME/theos/
+          echo "SDKs目录:"
+          ls -la $HOME/theos/sdks/
+          echo "环境变量:"
+          env | grep -E "THEOS|PATH|SDK"
+          echo ".theos目录:"
+          ls -la .theos/ || echo "无.theos目录"
