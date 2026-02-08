@@ -27,6 +27,8 @@ YNCloudNoteVIP_LIBRARIES = substrate
 ifeq ($(THEOS_PACKAGE_SCHEME),rootless)
     THEOS_PACKAGE_TOOL = dpkg-deb
 endif
-
+# 设置使用 xz 压缩以兼容新版 dpkg-deb
+THEOS_PACKAGE_COMPRESSION = xz
 # 第二步：引入Tweak专属打包规则（必须最后一行）
 include $(THEOS_MAKE_PATH)/tweak.mk
+
