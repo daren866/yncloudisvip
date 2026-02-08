@@ -20,6 +20,37 @@ jobs:
           mkdir -p $HOME/theos/sdks
           cp -r $HOME/iOS-SDKs/iPhoneOS15.5.sdk $HOME/theos/sdks/
       
+            # 步骤 1: 解决“vendor目录缺失”的编译错误
+      - name: Initialize Theos Vendor Directory
+        run: |
+          cd $HOME/theos
+          git submodule update --init --recursive
+          echo "✅ Theos vendor 目录初始化完成。"
+
+      # 步骤 2: 解决“requires dm.pl”的打包错误
+      - name: Setup dm.pl for Theos
+        run: |
+          mkdir -p $HOME/theos/bin
+          cat > $HOME/theos/bin/dm.pl << 'EOF'
+          #!/usr/bin/env perl
+          use strict;
+          use warnings;
+          my @args = @ARGV;
+          exec('dpkg-deb', @args) or die "无法执行 dpkg-deb: $!";
+          EOF
+                    chmod +x $HOME/theos/bin/dm.pl
+                    echo "$HOME/theos/bin" >> $GITHUB_PATH
+                    echo "✅ 已创建并配置 dm.pl 脚本。"
+
+      # 步骤 3: 原来的编译和打包步骤
+      - name: Build Tweak
+        run: |
+          cd $GITHUB_WORKSPACE
+          export THEOS=$HOME/theos
+          export THEOS_PACKAGE_SCHEME=rootless
+          export SDKROOT=$HOME/theos/sdks/iPhoneOS15.5.sdk
+          make clean
+          make package
       - name: Build
         run: |
           cd $GITHUB_WORKSPACE
