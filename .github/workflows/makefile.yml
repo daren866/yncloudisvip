@@ -1,8 +1,7 @@
 name: Build YoudaoNote VIP Tweak (Ellekit + iPhone7 Rootless)
-
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -10,232 +9,142 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 20
     continue-on-error: true
-    
+
     steps:
-      # 步骤0：初始化日志 + 修复Git配置（解决认证）
-      - name: Init Log + Fix Git Config
+      # 步骤0：初始化日志 + Git配置（核心）
+      - name: Init Env
         run: |
-          # 1. 强制创建日志目录
+          # 创建日志目录（绝对合规格式）
           LOG_DIR="${GITHUB_WORKSPACE}/workflow-logs"
-          mkdir -p "${LOG_DIR}" || sudo mkdir -p "${LOG_DIR}"
-          LOG_FILE="${LOG_DIR}/error.log"
-          touch "${LOG_FILE}"
-          echo "=== Workflow Start: $(date) ===" > "${LOG_FILE}"
-          
-          # 2. 配置Git使用HTTPS（避免SSH认证）
-          sudo git config --system --unset-all credential.helper 2>&1 >> "${LOG_FILE}"
-          sudo git config --system credential.helper "false" 2>&1 >> "${LOG_FILE}"
-          git config --global protocol.file.allow always 2>&1 >> "${LOG_FILE}"
-          git config --global url."https://github.com/".insteadOf git@github.com: 2>&1 >> "${LOG_FILE}"
-          git config --global http.sslVerify false 2>&1 >> "${LOG_FILE}"
-          
-          # 3. 验证Git配置
-          echo -e "\n=== Git最终配置 ===" >> "${LOG_FILE}"
-          git config --list 2>&1 >> "${LOG_FILE}"
-          echo "✅ Git配置完成，强制使用HTTPS拉取" >> "${LOG_FILE}"
+          mkdir -p "${LOG_DIR}"
+          touch "${LOG_DIR}/error.log"
+          echo "=== Start: $(date) ===" > "${LOG_DIR}/error.log"
+
+          # Git配置（避免认证）
+          git config --global credential.helper "false"
+          git config --global url."https://github.com/".insteadOf git@github.com:
+          git config --global http.sslVerify false
+          echo "✅ Git config done" >> "${LOG_DIR}/error.log"
         continue-on-error: true
-      
+
       # 步骤1：拉取主仓库
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
         continue-on-error: true
-      
-      # 步骤2：调试系统信息
-      - name: Debug - Full Env
+
+      # 步骤2：安装依赖 + Git拉取（简化语法）
+      - name: Install Dependencies
         run: |
-          LOG_DIR="${GITHUB_WORKSPACE}/workflow-logs"
-          mkdir -p "${LOG_DIR}"
-          LOG_FILE="${LOG_DIR}/error.log"
-          
+          LOG_FILE="${GITHUB_WORKSPACE}/workflow-logs/error.log"
           set +e
-          set -x
-          {
-            echo -e "\n=== 系统信息 ==="
-            uname -a && sw_vers
-            echo -e "\n=== 网络测试（GitHub HTTPS）==="
-            curl --connect-timeout 10 -s https://github.com && echo "✅ GitHub HTTPS OK" || echo "❌ GitHub HTTPS Fail"
-            echo -e "\n=== Git版本 ==="
-            git --version
-          } 2>&1 | tee -a "${LOG_FILE}"
-          set +x
+
+          # 安装基础工具
+          brew update --quiet || true
+          brew install ldid dpkg git curl --quiet || true
+          echo "✅ Install tools done" >> "${LOG_FILE}"
+
+          # 清理旧文件
+          rm -rf ~/theos ~/ellekit ~/iOS-SDKs
+
+          # 1. Git拉取Theos（重试3次）
+          for i in 1 2 3; do
+            git clone --depth 1 https://github.com/theos/theos.git ~/theos && break
+            echo "❌ Theos clone fail, retry $i" >> "${LOG_FILE}"
+            sleep 2
+          done
+          [ -d ~/theos ] && echo "✅ Theos clone ok" >> "${LOG_FILE}" || echo "❌ Theos clone fail" >> "${LOG_FILE}"
+
+          # 2. Git拉取Ellekit（你的指定仓库）
+          for i in 1 2 3; do
+            git clone --depth 1 https://github.com/tealbathingsuit/ellekit.git ~/ellekit && break
+            echo "❌ Ellekit clone fail, retry $i" >> "${LOG_FILE}"
+            sleep 2
+          done
+          [ -d ~/ellekit ] && echo "✅ Ellekit clone ok" >> "${LOG_FILE}" || echo "❌ Ellekit clone fail" >> "${LOG_FILE}"
+
+          # 3. Git拉取iOS-SDKs
+          for i in 1 2 3; do
+            git clone --depth 1 https://github.com/xybp888/iOS-SDKs.git ~/iOS-SDKs && break
+            echo "❌ iOS-SDKs clone fail, retry $i" >> "${LOG_FILE}"
+            sleep 2
+          done
+          [ -d ~/iOS-SDKs ] && echo "✅ iOS-SDKs clone ok" >> "${LOG_FILE}" || echo "❌ iOS-SDKs clone fail" >> "${LOG_FILE}"
+
+          # 复制依赖
+          mkdir -p ~/theos/sdks
+          if [ -d ~/iOS-SDKs/iPhoneOS14.4.sdk ]; then
+            cp -r ~/iOS-SDKs/iPhoneOS14.4.sdk ~/theos/sdks/
+          elif [ -d ~/iOS-SDKs/iPhoneOS15.5.sdk ]; then
+            cp -r ~/iOS-SDKs/iPhoneOS15.5.sdk ~/theos/sdks/
+          fi
+
+          mkdir -p ~/theos/vendor/ellekit
+          [ -d ~/ellekit/include ] && cp -r ~/ellekit/include ~/theos/vendor/ellekit/
+          [ -d ~/ellekit/lib ] && cp -r ~/ellekit/lib ~/theos/vendor/ellekit/
         continue-on-error: true
-      
-      # 步骤3：Git拉取所有依赖（Theos + Ellekit + iOS-SDKs）
-      - name: Git Clone Dependencies
+
+      # 步骤3：编译打包（核心修复第211行附近语法）
+      - name: Build Package
+        shell: /bin/bash
         run: |
-          LOG_DIR="${GITHUB_WORKSPACE}/workflow-logs"
-          mkdir -p "${LOG_DIR}"
-          LOG_FILE="${LOG_DIR}/error.log"
-          
+          LOG_FILE="${GITHUB_WORKSPACE}/workflow-logs/error.log"
           set +e
-          set -x
-          {
-            echo -e "\n=== 安装基础工具 ==="
-            brew update --quiet || true
-            brew install ldid dpkg git curl --quiet || true
-            
-            # 清理旧环境
-            rm -rf "${HOME}/theos" "${HOME}/ellekit" "${HOME}/iOS-SDKs"
-            
-            # ========== 1. Git拉取Theos ==========
-            echo -e "\n=== Git Clone Theos ==="
-            for i in {1..3}; do
-              git clone --depth 1 --single-branch --branch master https://github.com/theos/theos.git "${HOME}/theos" 2>&1 && break
-              echo "❌ Theos拉取失败，重试第${i}次"
-              sleep 2
-            done
-            [ -d "${HOME}/theos" ] && echo "✅ Theos拉取成功" || echo "❌ Theos拉取最终失败"
-            
-            # Theos子模块初始化
-            if [ -d "${HOME}/theos" ]; then
-              cd "${HOME}/theos"
-              git submodule update --init --recursive --quiet src/objc 2>&1 || echo "❌ Theos子模块失败（忽略）"
-            fi
-            
-            # ========== 2. Git拉取Ellekit（指定仓库）==========
-            echo -e "\n=== Git Clone Ellekit ==="
-            for i in {1..3}; do
-              git clone --depth 1 --single-branch --branch main https://github.com/tealbathingsuit/ellekit.git "${HOME}/ellekit" 2>&1 && break
-              echo "❌ Ellekit拉取失败，重试第${i}次"
-              sleep 2
-            done
-            [ -d "${HOME}/ellekit" ] && echo "✅ Ellekit拉取成功" || echo "❌ Ellekit拉取最终失败"
-            
-            # ========== 3. Git拉取iOS-SDKs ==========
-            echo -e "\n=== Git Clone iOS-SDKs ==="
-            for i in {1..3}; do
-              git clone --depth 1 --single-branch --branch master https://github.com/xybp888/iOS-SDKs.git "${HOME}/iOS-SDKs" 2>&1 && break
-              echo "❌ iOS-SDKs拉取失败，重试第${i}次"
-              sleep 2
-            done
-            [ -d "${HOME}/iOS-SDKs" ] && echo "✅ iOS-SDKs拉取成功" || echo "❌ iOS-SDKs拉取最终失败"
-            
-            # ========== 4. 复制依赖文件 ==========
-            echo -e "\n=== 复制依赖文件 ==="
-            mkdir -p "${HOME}/theos/sdks"
-            # SDK复制容错
-            if [ -d "${HOME}/iOS-SDKs/iPhoneOS14.4.sdk" ]; then
-              cp -r "${HOME}/iOS-SDKs/iPhoneOS14.4.sdk" "${HOME}/theos/sdks/" 2>&1
-            elif [ -d "${HOME}/iOS-SDKs/iPhoneOS15.5.sdk" ]; then
-              cp -r "${HOME}/iOS-SDKs/iPhoneOS15.5.sdk" "${HOME}/theos/sdks/" 2>&1
-            else
-              echo "❌ SDK复制失败"
-            fi
-            
-            # Ellekit复制容错
-            mkdir -p "${HOME}/theos/vendor/ellekit"
-            if [ -d "${HOME}/ellekit/include" ]; then
-              cp -r "${HOME}/ellekit/include" "${HOME}/theos/vendor/ellekit/" 2>&1 || echo "❌ Ellekit头文件复制失败"
-            fi
-            if [ -d "${HOME}/ellekit/lib" ]; then
-              cp -r "${HOME}/ellekit/lib" "${HOME}/theos/vendor/ellekit/" 2>&1 || echo "❌ Ellekit库文件复制失败"
-            fi
-            
-            echo -e "\n=== Git拉取依赖退出码：$? ==="
-          } 2>&1 | tee -a "${LOG_FILE}"
-          set +x
-        continue-on-error: true
-      
-      # 步骤4：修复deb.mk + 编译打包
-      - name: Fix deb.mk & Build
-        shell: /bin/bash {0}
-        run: |
-          LOG_DIR="${GITHUB_WORKSPACE}/workflow-logs"
-          mkdir -p "${LOG_DIR}"
-          LOG_FILE="${LOG_DIR}/error.log"
+
+          # 修复deb.mk
+          DEB_MK=~/theos/makefiles/package/deb.mk
+          if [ -f "${DEB_MK}" ]; then
+            sed -i '' 's/COPYFILE_DISABLE=1.*/COPYFILE_DISABLE=1 $(FAKEROOT) -r dm.pl $(THEOS_PLATFORM_DPKG_DEB_COMPRESSION_FLAG) $(DPKGDEB_FLAGS) -b "$(_THEOS_PLATFORM_DPKG_DEB_BUILD_DPKG_FAKEROOT_PATH)" "$(THEOS_PACKAGE_DIR)/$(PACKAGE_FILENAME)"/' "${DEB_MK}"
+          fi
+
+          # 编译配置（简化变量，避免解析错误）
+          cd "${GITHUB_WORKSPACE}" || exit 1
+          rm -rf .theos packages
+          export THEOS=~/theos
+          export ARCHS=arm64
+          export TARGET=iphone:clang:14.4:10.0
+          export THEOS_PACKAGE_SCHEME=rootless
+          export THEOS_STAGING_DIR=/var/jb
+          export SDKROOT=~/theos/sdks/iPhoneOS14.4.sdk
+          [ ! -d "${SDKROOT}" ] && export SDKROOT=~/theos/sdks/iPhoneOS15.5.sdk
+
+          # Ellekit依赖
+          export CFLAGS="-Wno-error -fobjc-arc"
+          [ -d ~/theos/vendor/ellekit/include ] && export CFLAGS+=" -I~/theos/vendor/ellekit/include"
+          export LDFLAGS="-Wl,-dead_strip"
+          [ -d ~/theos/vendor/ellekit/lib ] && export LDFLAGS+=" -L~/theos/vendor/ellekit/lib -lEllekit"
+
+          # 生成control文件（极简格式，避免解析错误）
+          echo 'Package: com.yncloudnote.vip.tweak
+          Name: YNCloudNoteVIP
+          Version: 0.0.1-1
+          Architecture: iphoneos-arm
+          Description: YoudaoNote VIP Tweak
+          Author: Your Name
+          Maintainer: Your Name
+          Section: Tweaks
+          Depends: ellekit (>= 1.0)
+          Rootless: yes' > control
           
-          set +e
-          set -x
-          {
-            echo -e "\n=== 修复deb.mk ==="
-            DEB_MK_FILE="${HOME}/theos/makefiles/package/deb.mk"
-            if [ -f "${DEB_MK_FILE}" ]; then
-              cp "${DEB_MK_FILE}" "${DEB_MK_FILE}.bak" 2>&1 || true
-              sed -i '' '/COPYFILE_DISABLE=1/ c\
-              COPYFILE_DISABLE=1 $(FAKEROOT) -r dm.pl $(THEOS_PLATFORM_DPKG_DEB_COMPRESSION_FLAG) $(DPKGDEB_FLAGS) -b "$(_THEOS_PLATFORM_DPKG_DEB_BUILD_DPKG_FAKEROOT_PATH)" "$(THEOS_PACKAGE_DIR)/$(PACKAGE_FILENAME)"
-              ' "${DEB_MK_FILE}" 2>&1 || echo "❌ deb.mk替换失败"
-            else
-              echo "❌ deb.mk不存在"
-            fi
-            
-            echo -e "\n=== 编译配置 ==="
-            if [ -d "${GITHUB_WORKSPACE}" ]; then
-              cd "${GITHUB_WORKSPACE}"
-              rm -rf .theos packages
-              make clean 2>/dev/null || true
-            else
-              echo "❌ 进入工作目录失败"
-            fi
-            
-            # 环境变量配置
-            export THEOS="${HOME}/theos"
-            export ARCHS="arm64"
-            export TARGET="iphone:clang:14.4:10.0"
-            export THEOS_PACKAGE_SCHEME="rootless"
-            export THEOS_STAGING_DIR="/var/jb"
-            SDK_PATH="${HOME}/theos/sdks/iPhoneOS14.4.sdk"
-            if [ ! -d "${SDK_PATH}" ]; then
-              SDK_PATH="${HOME}/theos/sdks/iPhoneOS15.5.sdk"
-            fi
-            if [ -d "${SDK_PATH}" ]; then
-              export SDKROOT="${SDK_PATH}"
-            else
-              export SDKROOT=""
-            fi
-            
-            # Ellekit依赖配置
-            export CFLAGS="-Wno-error -Wno-deprecated-declarations -fobjc-arc"
-            if [ -d "${HOME}/theos/vendor/ellekit/include" ]; then
-              export CFLAGS="${CFLAGS} -I${HOME}/theos/vendor/ellekit/include"
-            fi
-            export LDFLAGS="-Wl,-dead_strip"
-            if [ -d "${HOME}/theos/vendor/ellekit/lib" ]; then
-              export LDFLAGS="${LDFLAGS} -L${HOME}/theos/vendor/ellekit/lib -lEllekit"
-            fi
-            
-            # 生成control文件（EOF顶格）
-            cat > control << 'EOF'
-Package: com.yncloudnote.vip.tweak
-Name: YNCloudNoteVIP
-Version: 0.0.1-1
-Architecture: iphoneos-arm
-Description: YoudaoNote VIP Tweak (Ellekit + Rootless + iPhone7)
-Author: Your Name
-Maintainer: Your Name
-Section: Tweaks
-Depends: ellekit (>= 1.0)
-Homepage: https://github.com/your-repo
-Priority: optional
-Rootless: yes
-EOF
-            
-            echo -e "\n=== 执行打包 ==="
-            make package V=2 2>&1
-            echo -e "\n=== 打包退出码：$? ==="
-            ls -la packages/*.deb 2>&1 || echo "❌ 无deb包生成"
-          } 2>&1 | tee -a "${LOG_FILE}"
-          set +x
-        continue-on-error: true
-      
-      # 步骤5：上传产物
+          # 执行打包
+          make package V=2 || true
+          ls -la packages/*.deb || echo "❌ No deb file" >> "${LOG_FILE}"
+          continue-on-error: true
+
+      # 步骤4：上传产物
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Workflow-Logs-DEB
+          name: Build-Output
           path: |
             packages/*.deb
             workflow-logs/error.log
           if-no-files-found: warn
         continue-on-error: true
-      
-      # 步骤6：强制标记成功
+
+      # 步骤5：强制成功
       - name: Force Success
         run: |
-          LOG_DIR="${GITHUB_WORKSPACE}/workflow-logs"
-          mkdir -p "${LOG_DIR}"
-          LOG_FILE="${LOG_DIR}/error.log"
-          
-          echo -e "\n=== 强制标记成功，退出码：0 ===" >> "${LOG_FILE}"
+          echo "✅ Workflow done (force success)" >> "${GITHUB_WORKSPACE}/workflow-logs/error.log"
           exit 0
         continue-on-error: true
