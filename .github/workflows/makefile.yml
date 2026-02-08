@@ -52,6 +52,48 @@ jobs:
           sed -i.bak 's/^\s*(COPYFILE_DISABLE=1.*$(FAKEROOT).*-b.*$/COPYFILE_DISABLE=1 $(FAKEROOT) -r dm.pl $(THEOS_PLATFORM_DPKG_DEB_COMPRESSION_FLAG) $(DPKGDEB_FLAGS) -b "$(_THEOS_PLATFORM_DPKG_DEB_BUILD_DPKG_FAKEROOT_PATH)" "$(THEOS_PACKAGE_DIR)\/$(PACKAGE_FILENAME)"/' "$DEB_MK_FILE"
           echo "✅ 已尝试修复打包命令。"
       
+      - name: Fix Theos Packaging Command Syntax (Precise)
+        run: |
+          DEB_MK_FILE="$HOME/theos/makefiles/package/deb.mk"
+          echo "正在执行精确语法修复..."
+      
+          # 1. 首先，定位到引发错误的具体行。
+          # 错误命令的格式为: (COPYFILE_DISABLE=1 ... -Zxz) -z1 -b ...
+          # 我们需要移除包裹整个命令的、多余的外层括号，使其变为合法的 shell 命令。
+          
+          # 2. 创建一个修复脚本，它更精确地定位和替换
+          cat > /tmp/fix_deb_mk.py << 'EOF'
+      import sys
+      import re
+      
+      with open(sys.argv[1], 'r') as f:
+          lines = f.readlines()
+      
+      new_lines = []
+      for line in lines:
+          # 匹配以括号开头，包含 COPYFILE_DISABLE 和 -b 参数的行
+          # 这是导致 (command) -flag 语法错误的典型模式
+          if line.strip().startswith('(') and 'COPYFILE_DISABLE=1' in line and '-b' in line:
+              print(f"发现待修复行: {line.strip()}")
+              # 移除行首的 '(' 和行尾对应的 ')'
+              fixed_line = re.sub(r'^\s*\(\s*(.*?)\s*\)\s*$', r'\1', line)
+              if fixed_line != line:
+                  print(f"已修复为: {fixed_line.strip()}")
+                  line = fixed_line
+              else:
+                  print("警告: 模式匹配但修复未生效，行可能较复杂。")
+          new_lines.append(line)
+      
+      with open(sys.argv[1], 'w') as f:
+          f.writelines(new_lines)
+      print("文件处理完成。")
+      EOF
+
+    # 3. 执行 Python 脚本进行修复
+    python3 /tmp/fix_deb_mk.py "$DEB_MK_FILE"
+
+    echo "✅ 精确语法修复完成。"
+      
       # 步骤 3: 原来的编译和打包步骤
       - name: Build Tweak
         run: |
