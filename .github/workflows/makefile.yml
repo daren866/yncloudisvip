@@ -160,19 +160,17 @@ jobs:
           export LDFLAGS="-Wl,-dead_strip"
           [ -d ~/theos/vendor/ellekit/lib ] && export LDFLAGS+=" -L~/theos/vendor/ellekit/lib -lEllekit"
           
-          # 生成control文件（极简格式）
-          cat > control << EOF
-Package: com.yncloudnote.vip.tweak
-Name: YNCloudNoteVIP
-Version: 0.0.1-1
-Architecture: iphoneos-arm
-Description: YoudaoNote VIP Tweak
-Author: Your Name
-Maintainer: Your Name
-Section: Tweaks
-Depends: ellekit (>= 1.0)
-Rootless: yes
-EOF
+          # 生成control文件（使用echo替代heredoc）
+          echo "Package: com.yncloudnote.vip.tweak" > control
+          echo "Name: YNCloudNoteVIP" >> control
+          echo "Version: 0.0.1-1" >> control
+          echo "Architecture: iphoneos-arm" >> control
+          echo "Description: YoudaoNote VIP Tweak" >> control
+          echo "Author: Your Name" >> control
+          echo "Maintainer: Your Name" >> control
+          echo "Section: Tweaks" >> control
+          echo "Depends: ellekit (>= 1.0)" >> control
+          echo "Rootless: yes" >> control
           
           # 执行打包
           echo -e "\n=== 执行打包 ===" >> "${LOG_FILE}"
