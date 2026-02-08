@@ -30,7 +30,7 @@ jobs:
         run: |
           echo "=== 安装基础工具 ===" >> "${LOG_FILE}"
           brew update
-          brew install ldid dpkg git curl wget make perl
+          brew install ldid dpkg git curl wget make perl xz
           echo "✅ 基础工具安装完成" >> "${LOG_FILE}"
 
       # 步骤4：安装Theos（完整安装）
@@ -60,9 +60,9 @@ jobs:
           
           # 尝试下载多个版本的SDK
           SDK_URLS=(
-            "https://github.com/xybp888/iOS-SDKs/releases/download/16.4/iPhoneOS16.4.sdk.tar.xz"
             "https://github.com/xybp888/iOS-SDKs/releases/download/14.4/iPhoneOS14.4.sdk.tar.xz"
             "https://github.com/xybp888/iOS-SDKs/releases/download/15.5/iPhoneOS15.5.sdk.tar.xz"
+            "https://github.com/xybp888/iOS-SDKs/releases/download/16.4/iPhoneOS16.4.sdk.tar.xz"
           )
           
           SDK_DOWNLOADED=false
@@ -70,6 +70,7 @@ jobs:
             echo "尝试下载: $SDK_URL" >> "${LOG_FILE}"
             wget -q --timeout=30 "$SDK_URL" -O sdk.tar.xz 2>&1 >> "${LOG_FILE}" || continue
             if [ -f sdk.tar.xz ]; then
+              echo "正在解压SDK..." >> "${LOG_FILE}"
               tar -xf sdk.tar.xz 2>&1 >> "${LOG_FILE}"
               rm -f sdk.tar.xz
               SDK_DOWNLOADED=true
@@ -83,29 +84,25 @@ jobs:
             git clone --depth 1 https://github.com/xybp888/iOS-SDKs.git ~/iOS-SDKs 2>&1 >> "${LOG_FILE}" || echo "⚠️ iOS-SDKs克隆失败" >> "${LOG_FILE}"
             if [ -d ~/iOS-SDKs/iPhoneOS14.4.sdk ]; then
               cp -r ~/iOS-SDKs/iPhoneOS14.4.sdk ~/theos/sdks/ 2>&1 >> "${LOG_FILE}"
-              echo "✅ SDK复制完成" >> "${LOG_FILE}"
+              echo "✅ SDK复制完成 (14.4)" >> "${LOG_FILE}"
             elif [ -d ~/iOS-SDKs/iPhoneOS15.5.sdk ]; then
               cp -r ~/iOS-SDKs/iPhoneOS15.5.sdk ~/theos/sdks/ 2>&1 >> "${LOG_FILE}"
-              echo "✅ SDK复制完成" >> "${LOG_FILE}"
+              echo "✅ SDK复制完成 (15.5)" >> "${LOG_FILE}"
             fi
           fi
           
-          # 验证dm.pl是否存在
-          if [ -f ~/theos/bin/dm.pl ]; then
-            echo "✅ dm.pl 文件存在" >> "${LOG_FILE}"
-            chmod +x ~/theos/bin/dm.pl
-          else
-            echo "❌ dm.pl 文件不存在，尝试修复..." >> "${LOG_FILE}"
-            # 尝试从其他位置复制或下载dm.pl
-            if [ ! -f ~/theos/bin/dm.pl ]; then
-              echo "正在下载dm.pl..." >> "${LOG_FILE}"
-              wget -q https://raw.githubusercontent.com/theos/theos/master/bin/dm.pl -O ~/theos/bin/dm.pl 2>&1 >> "${LOG_FILE}" || true
-              if [ -f ~/theos/bin/dm.pl ]; then
-                chmod +x ~/theos/bin/dm.pl
-                echo "✅ dm.pl 已下载并设置可执行权限" >> "${LOG_FILE}"
+          # 验证SDK结构
+          echo "检查SDK目录结构..." >> "${LOG_FILE}"
+          for sdk in ~/theos/sdks/*.sdk; do
+            if [ -d "$sdk" ]; then
+              echo "找到SDK: $sdk" >> "${LOG_FILE}"
+              if [ -d "$sdk/System/Library/Frameworks/Foundation.framework" ]; then
+                echo "✅ $sdk 包含Foundation.framework" >> "${LOG_FILE}"
+              else
+                echo "❌ $sdk 缺少Foundation.framework" >> "${LOG_FILE}"
               fi
             fi
-          fi
+          done
 
       # 步骤5：安装和配置Ellekit
       - name: Setup Ellekit
@@ -120,111 +117,65 @@ jobs:
             echo "尝试从备用源克隆Ellekit..." >> "${LOG_FILE}"
             git clone --depth 1 https://github.com/eilla1/ellekit.git ~/ellekit 2>&1 >> "${LOG_FILE}" || echo "❌ Ellekit克隆完全失败" >> "${LOG_FILE}"
           fi
-          
-          # 复制Ellekit文件到Theos
-          if [ -d ~/ellekit ]; then
-            echo "复制Ellekit文件到Theos..." >> "${LOG_FILE}"
-            mkdir -p ~/theos/vendor/ellekit
-            
-            # 复制头文件
-            if [ -d ~/ellekit/include ]; then
-              cp -r ~/ellekit/include ~/theos/vendor/ellekit/ 2>&1 >> "${LOG_FILE}"
-              echo "✅ Ellekit头文件复制完成" >> "${LOG_FILE}"
-            fi
-            
-            # 复制库文件
-            if [ -d ~/ellekit/lib ]; then
-              cp -r ~/ellekit/lib ~/theos/vendor/ellekit/ 2>&1 >> "${LOG_FILE}"
-              echo "✅ Ellekit库文件复制完成" >> "${LOG_FILE}"
-            fi
-            
-            # 如果lib目录为空，尝试构建ellekit
-            if [ ! -f ~/theos/vendor/ellekit/lib/libellekit.dylib ]; then
-              echo "尝试构建Ellekit..." >> "${LOG_FILE}"
-              cd ~/ellekit
-              make 2>&1 >> "${LOG_FILE}" || echo "⚠️ Ellekit构建失败" >> "${LOG_FILE}"
-              
-              # 复制构建好的库
-              if [ -f ~/ellekit/.theos/obj/libellekit.dylib ]; then
-                mkdir -p ~/theos/vendor/ellekit/lib
-                cp ~/ellekit/.theos/obj/libellekit.dylib ~/theos/vendor/ellekit/lib/ 2>&1 >> "${LOG_FILE}"
-                echo "✅ Ellekit库构建并复制完成" >> "${LOG_FILE}"
-              fi
-            fi
-          else
-            echo "❌ Ellekit目录不存在，跳过配置" >> "${LOG_FILE}"
-          fi
 
-      # 步骤6：修复deb.mk和配置环境
-      - name: Fix Theos Configuration
-        run: |
-          echo "=== 修复Theos配置 ===" >> "${LOG_FILE}"
-          
-          # 修复deb.mk中的dm.pl路径
-          DEB_MK=~/theos/makefiles/package/deb.mk
-          if [ -f "${DEB_MK}" ]; then
-            # 备份原始文件
-            cp "${DEB_MK}" "${DEB_MK}.bak"
-            
-            # 修复dm.pl路径
-            sed -i '' 's|\$\(THEOS_BIN_PATH\)/dm.pl|~/theos/bin/dm.pl|g' "${DEB_MK}" 2>&1 >> "${LOG_FILE}" || true
-            
-            # 修复COPYFILE_DISABLE问题
-            sed -i '' 's|COPYFILE_DISABLE=1|COPYFILE_DISABLE=1; export COPYFILE_DISABLE|g' "${DEB_MK}" 2>&1 >> "${LOG_FILE}" || true
-            
-            echo "✅ deb.mk修复完成" >> "${LOG_FILE}"
-          fi
-          
-          # 确保dm.pl可执行
-          if [ -f ~/theos/bin/dm.pl ]; then
-            chmod +x ~/theos/bin/dm.pl
-            echo "✅ dm.pl设置为可执行" >> "${LOG_FILE}"
-          fi
-          
-          # 添加Theos到PATH
-          echo "export THEOS=~/theos" >> ~/.zshrc
-          echo "export PATH=\$PATH:~/theos/bin:~/theos/vendor/bin" >> ~/.zshrc
-          source ~/.zshrc
-          
-          echo "✅ Theos环境配置完成" >> "${LOG_FILE}"
-
-      # 步骤7：编译打包
+      # 步骤6：编译打包
       - name: Build Package
         run: |
           echo "=== 编译打包 ===" >> "${LOG_FILE}"
           
           cd "${{ github.workspace }}"
           
-          # 设置环境变量
-          export THEOS=~/theos
-          export PATH="$PATH:~/theos/bin:~/theos/vendor/bin"
+          # 设置环境变量 - 使用绝对路径
+          export THEOS=/Users/runner/theos
+          export PATH="$PATH:$THEOS/bin:$THEOS/vendor/bin"
           export ARCHS=arm64
           export TARGET=iphone:clang:latest:12.0
           export THEOS_PACKAGE_SCHEME=rootless
           export THEOS_STAGING_DIR=/var/jb
           
-          # 设置SDK路径
-          if [ -d ~/theos/sdks/iPhoneOS16.4.sdk ]; then
-            export SDKROOT=~/theos/sdks/iPhoneOS16.4.sdk
-          elif [ -d ~/theos/sdks/iPhoneOS15.5.sdk ]; then
-            export SDKROOT=~/theos/sdks/iPhoneOS15.5.sdk
-          elif [ -d ~/theos/sdks/iPhoneOS14.4.sdk ]; then
-            export SDKROOT=~/theos/sdks/iPhoneOS14.4.sdk
-          else
-            echo "❌ 未找到可用的SDK" >> "${LOG_FILE}"
+          # 查找可用的SDK
+          echo "查找可用的SDK..." >> "${LOG_FILE}"
+          for sdk in $THEOS/sdks/*.sdk; do
+            if [ -d "$sdk" ] && [ -d "$sdk/System/Library/Frameworks/Foundation.framework" ]; then
+              export SDKROOT="$sdk"
+              echo "✅ 使用SDK: $SDKROOT" >> "${LOG_FILE}"
+              break
+            fi
+          done
+          
+          if [ -z "$SDKROOT" ]; then
+            echo "❌ 未找到包含Foundation.framework的SDK" >> "${LOG_FILE}"
+            echo "SDK目录内容:" >> "${LOG_FILE}"
+            ls -la $THEOS/sdks/ >> "${LOG_FILE}"
             exit 1
           fi
           
           # 设置Ellekit编译选项
-          export CFLAGS="-Wno-error -fobjc-arc -I~/theos/vendor/ellekit/include"
-          export LDFLAGS="-Wl,-dead_strip -L~/theos/vendor/ellekit/lib -lellekit"
+          export CFLAGS="-Wno-error -fobjc-arc -I$THEOS/vendor/ellekit/include"
+          export LDFLAGS="-Wl,-dead_strip -L$THEOS/vendor/ellekit/lib -lellekit"
           
+          echo "环境变量配置:" >> "${LOG_FILE}"
           echo "THEOS: $THEOS" >> "${LOG_FILE}"
           echo "SDKROOT: $SDKROOT" >> "${LOG_FILE}"
           echo "PATH: $PATH" >> "${LOG_FILE}"
+          echo "CFLAGS: $CFLAGS" >> "${LOG_FILE}"
+          echo "LDFLAGS: $LDFLAGS" >> "${LOG_FILE}"
           
-          # 检查dm.pl是否在PATH中
-          which dm.pl >> "${LOG_FILE}" || echo "⚠️ dm.pl不在PATH中" >> "${LOG_FILE}"
+          # 创建符号链接确保Foundation头文件可访问
+          echo "创建符号链接确保头文件可访问..." >> "${LOG_FILE}"
+          if [ -d "$SDKROOT/System/Library/Frameworks/Foundation.framework/Headers" ]; then
+            # 创建指向Foundation头文件的符号链接
+            mkdir -p $THEOS/include/Foundation
+            ln -sf "$SDKROOT/System/Library/Frameworks/Foundation.framework/Headers/"* $THEOS/include/Foundation/ 2>&1 >> "${LOG_FILE}" || true
+            echo "✅ Foundation头文件符号链接创建完成" >> "${LOG_FILE}"
+          fi
+          
+          # 检查Prefix.pch文件
+          echo "检查Prefix.pch文件..." >> "${LOG_FILE}"
+          if [ -f "$THEOS/Prefix.pch" ]; then
+            echo "Prefix.pch内容:" >> "${LOG_FILE}"
+            head -30 "$THEOS/Prefix.pch" >> "${LOG_FILE}"
+          fi
           
           # 清理旧构建
           rm -rf .theos packages
@@ -244,10 +195,14 @@ jobs:
           # 尝试构建
           echo "开始构建..." >> "${LOG_FILE}"
           
+          # 显示make版本
+          make --version >> "${LOG_FILE}" 2>&1 || echo "make命令不可用" >> "${LOG_FILE}"
+          
           # 首先运行make clean
           make clean 2>&1 >> "${LOG_FILE}" || echo "⚠️ make clean失败，继续构建" >> "${LOG_FILE}"
           
           # 然后运行make package
+          echo "运行 make package..." >> "${LOG_FILE}"
           make package 2>&1 >> "${LOG_FILE}" || {
             echo "❌ 构建失败" >> "${LOG_FILE}"
             # 尝试调试
@@ -255,9 +210,8 @@ jobs:
             echo "当前目录: $(pwd)" >> "${LOG_FILE}"
             echo "文件列表:" >> "${LOG_FILE}"
             ls -la >> "${LOG_FILE}"
-            echo "THEOS变量: $THEOS" >> "${LOG_FILE}"
-            echo "检查dm.pl:" >> "${LOG_FILE}"
-            ls -la ~/theos/bin/dm.pl 2>&1 >> "${LOG_FILE}" || echo "dm.pl不存在" >> "${LOG_FILE}"
+            echo "检查SDK中的Foundation头文件:" >> "${LOG_FILE}"
+            find "$SDKROOT" -name "Foundation.h" 2>/dev/null | head -5 >> "${LOG_FILE}"
           }
           
           # 检查结果
@@ -266,12 +220,9 @@ jobs:
             ls -la packages/*.deb >> "${LOG_FILE}"
           else
             echo "❌ 构建失败，未生成deb包" >> "${LOG_FILE}"
-            echo "尝试手动运行dm.pl..." >> "${LOG_FILE}"
-            # 尝试手动运行dm.pl测试
-            ~/theos/bin/dm.pl --help 2>&1 >> "${LOG_FILE}" || echo "dm.pl测试失败" >> "${LOG_FILE}"
           fi
 
-      # 步骤8：上传构建产物
+      # 步骤7：上传构建产物
       - name: Upload Artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -283,7 +234,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-      # 步骤9：上传详细日志
+      # 步骤8：上传详细日志
       - name: Upload Detailed Logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -291,7 +242,6 @@ jobs:
           name: Detailed-Logs
           path: |
             ${{ github.workspace }}/workflow-logs/
-            ~/theos/
-            ~/ellekit/
+            ~/theos/sdks/
           if-no-files-found: ignore
           retention-days: 7
