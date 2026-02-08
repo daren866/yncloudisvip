@@ -46,16 +46,34 @@ jobs:
       - name: Build Tweak
         run: |
           cd $GITHUB_WORKSPACE
+      
+          # 1. 强力清理，确保无缓存
+          rm -rf .theos
+          make clean 2>/dev/null || true
+      
+          # 2. 关键：在编译打包前，设置环境变量，强制 dpkg-deb 使用 xz
+          # 这是最直接、最有效的一步，会直接影响 dpkg-deb 的行为
+          export DEB_BUILD_COMPRESSOR=xz
+          export DEB_BUILD_COMPRESSOR_TYPE=xz
+      
+          # 3. 验证并再次修补 Theos 内部规则
+          PATCH_FILE="$HOME/theos/makefiles/package/deb.mk"
+          echo "=== 检查并修补打包规则文件 ==="
+          if grep -q "_THEOS_PLATFORM_DPKG_DEB_COMPRESSION.*lzma" "$PATCH_FILE"; then
+            echo "找到 lzma 配置，正在替换为 xz..."
+            sed -i.bak 's/_THEOS_PLATFORM_DPKG_DEB_COMPRESSION.*lzma/_THEOS_PLATFORM_DPKG_DEB_COMPRESSION = xz/g' "$PATCH_FILE"
+          else
+            echo "规则文件中未找到 lzma 配置，尝试直接添加 xz 配置..."
+            echo "_THEOS_PLATFORM_DPKG_DEB_COMPRESSION = xz" >> "$PATCH_FILE"
+          fi
+      
+          # 4. 设置必要的 Theos 环境变量
           export THEOS=$HOME/theos
           export THEOS_PACKAGE_SCHEME=rootless
           export SDKROOT=$HOME/theos/sdks/iPhoneOS15.5.sdk
-          make clean
-          make package
-      - name: Build
-        run: |
-          cd $GITHUB_WORKSPACE
-          export THEOS=$HOME/theos
-          make clean
+      
+          # 5. 开始构建和打包
+          echo "=== 开始最终构建 ==="
           make package
       
       - name: Upload Artifact
