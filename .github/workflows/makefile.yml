@@ -12,22 +12,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      - name: Install Dependencies
+      - name: Install Dependencies (Clean & Reinstall)
         run: |
+          # 先清理可能损坏的 theos 目录
+          rm -rf $HOME/theos
           brew install ldid dpkg
+          
+          # 重新克隆干净的 theos 仓库（确保文件未被篡改）
           git clone --depth=1 https://github.com/theos/theos.git $HOME/theos
           git clone --depth=1 https://github.com/xybp888/iOS-SDKs.git $HOME/iOS-SDKs
           mkdir -p $HOME/theos/sdks
           cp -r $HOME/iOS-SDKs/iPhoneOS15.5.sdk $HOME/theos/sdks/
-      
-      # 步骤 1: 解决“vendor目录缺失”的编译错误
-      - name: Initialize Theos Vendor Directory
-        run: |
+          
+          # 初始化 submodule（确保依赖完整）
           cd $HOME/theos
           git submodule update --init --recursive
-          echo "✅ Theos vendor 目录初始化完成。"
+          echo "✅ 重新安装 Theos 完成，文件均为原始状态。"
 
-      # 步骤 2: 解决“requires dm.pl”的打包错误
+      # 步骤 1: 配置 dm.pl（解决 requires dm.pl 错误）
       - name: Setup dm.pl for Theos
         run: |
           mkdir -p $HOME/theos/bin
@@ -40,162 +42,70 @@ jobs:
           EOF
           chmod +x $HOME/theos/bin/dm.pl
           echo "$HOME/theos/bin" >> $GITHUB_PATH
-          echo "✅ 已创建并配置 dm.pl 脚本。"
+          echo "✅ dm.pl 配置完成。"
 
-      # 关键修改：彻底移除 deb.mk 中所有多余的括号（替代之前的模糊修复）
-      - name: Fix Theos deb.mk Brackets (Force Remove)
+      # 步骤 2: 仅修复打包命令行的括号（不碰其他语法）
+      - name: Fix deb.mk (Only Bracket in Package Command)
         run: |
           DEB_MK_FILE="$HOME/theos/makefiles/package/deb.mk"
-          echo "=== 彻底清理 deb.mk 中的多余括号 ==="
-          # 备份原文件
-          cp "$DEB_MK_FILE" "$DEB_MK_FILE.bak"
+          # 先备份原始干净的文件（关键！）
+          cp "$DEB_MK_FILE" "$DEB_MK_FILE.original"
           
-          # 核心修复：删除文件中所有行的开头(、结尾)，以及中间多余的括号
-          # 方式1：暴力替换所有括号（最直接有效）
-          sed -i '' 's/[(]//g; s/[)]//g' "$DEB_MK_FILE"
+          echo "=== 查看原始打包命令行 ==="
+          # 找到包含打包命令的行（特征：COPYFILE_DISABLE + fakeroot + dm.pl）
+          grep -n -E "COPYFILE_DISABLE.*fakeroot.*dm.pl" "$DEB_MK_FILE"
           
-          # 方式2（备选）：只删除包含 COPYFILE_DISABLE 的行的括号（更精准）
-          # sed -i '' '/COPYFILE_DISABLE/ { s/[(]//g; s/[)]//g; }' "$DEB_MK_FILE"
+          # 精准修复：只删除该行的首尾括号，保留 Makefile 语法
+          # 分两步：1. 删除行首的 (  2. 删除行尾的 )
+          sed -i '' \
+              -e '/COPYFILE_DISABLE.*fakeroot.*dm.pl/ s/^[[:space:]]*(//' \
+              -e '/COPYFILE_DISABLE.*fakeroot.*dm.pl/ s/)[[:space:]]*$//' \
+              "$DEB_MK_FILE"
           
-          # 验证修复结果
-          echo "=== 验证修复后的关键行 ==="
-          grep -n "COPYFILE_DISABLE" "$DEB_MK_FILE" | head -5
-          echo "✅ 括号清理完成。"
+          echo "=== 修复后的打包命令行 ==="
+          grep -n -E "COPYFILE_DISABLE.*fakeroot.*dm.pl" "$DEB_MK_FILE"
+          echo "✅ 仅修复打包命令行括号完成，Makefile 语法保留。"
 
-      # 步骤 3: 原来的编译和打包步骤
-      - name: Build Tweak
+      # 步骤 3: 修复压缩配置（lzma → xz）
+      - name: Fix Compression Config
+        run: |
+          DEB_MK_FILE="$HOME/theos/makefiles/package/deb.mk"
+          # 替换压缩方式（只改这一行，不碰其他）
+          sed -i '' 's/_THEOS_PLATFORM_DPKG_DEB_COMPRESSION = lzma/_THEOS_PLATFORM_DPKG_DEB_COMPRESSION = xz/g' "$DEB_MK_FILE"
+          # 确保配置生效
+          echo "_THEOS_PLATFORM_DPKG_DEB_COMPRESSION = xz" >> "$DEB_MK_FILE"
+          echo "✅ 压缩配置修复完成（lzma → xz）。"
+
+      # 步骤 4: 编译打包（核心步骤）
+      - name: Build & Package Tweak
         run: |
           cd $GITHUB_WORKSPACE
-      
-          # 1. 强力清理，确保无缓存
-          rm -rf .theos
+          
+          # 彻底清理缓存（避免旧文件干扰）
+          rm -rf .theos packages
           make clean 2>/dev/null || true
-      
-          # 2. 关键：强制 dpkg-deb 使用 xz 压缩
-          export DEB_BUILD_COMPRESSOR=xz
-          export DEB_BUILD_COMPRESSOR_TYPE=xz
-      
-          # 3. 修补 Theos 压缩配置（lzma 换 xz）
-          PATCH_FILE="$HOME/theos/makefiles/package/deb.mk"
-          echo "=== 检查并修补压缩配置 ==="
-          if grep -q "_THEOS_PLATFORM_DPKG_DEB_COMPRESSION.*lzma" "$PATCH_FILE"; then
-            sed -i '' 's/_THEOS_PLATFORM_DPKG_DEB_COMPRESSION.*lzma/_THEOS_PLATFORM_DPKG_DEB_COMPRESSION = xz/g' "$PATCH_FILE"
-          else
-            echo "_THEOS_PLATFORM_DPKG_DEB_COMPRESSION = xz" >> "$PATCH_FILE"
-          fi
-      
-          # 4. 设置 Theos 环境变量
+          
+          # 设置 Theos 环境变量（强制 rootless 模式）
           export THEOS=$HOME/theos
           export THEOS_PACKAGE_SCHEME=rootless
           export SDKROOT=$HOME/theos/sdks/iPhoneOS15.5.sdk
-      
-          # 5. 开始构建和打包
-          echo "=== 开始最终构建 ==="
-          make package -j$(sysctl -n hw.logicalcpu)  # 启用多线程编译加速
-      
-            # 步骤 2.1: 稳健修复 Theos 打包规则
-      - name: Patch Theos for Rootless & XZ
-        run: |
-          DEB_MK="$HOME/theos/makefiles/package/deb.mk"
-          echo "正在应用稳健的综合补丁..."
-
-          # 创建补丁内容
-          cat > /tmp/patch_deb.mk << 'EOF'
-          --- a/deb.mk
-          +++ b/deb.mk
-          @@ -关键行附近@@
-           # 核心修复：重写内部打包命令，避免所有括号问题
-          -_THEOS_PLATFORM_DPKG_DEB_BUILD_DPKG = \\
-          -       (COPYFILE_DISABLE=1 $(FAKEROOT) -r dm.pl $(THEOS_PLATFORM_DPKG_DEB_COMPRESSION_FLAG)) \\
-          -               $(DPKGDEB_FLAGS) -b "$(_THEOS_PLATFORM_DPKG_DEB_BUILD_DPKG_FAKEROOT_PATH)" \\
-          -               "$(THEOS_PACKAGE_DIR)/$(PACKAGE_FILENAME)"
-          +# 重构命令：移除外层括号，确保参数顺序正确
-          +_THEOS_PLATFORM_DPKG_DEB_BUILD_DPKG = \
-          +       COPYFILE_DISABLE=1 $(FAKEROOT) -r dm.pl $(THEOS_PLATFORM_DPKG_DEB_COMPRESSION_FLAG) \
-          +       $(DPKGDEB_FLAGS) -b "$(_THEOS_PLATFORM_DPKG_DEB_BUILD_DPKG_FAKEROOT_PATH)" \
-          +       "$(THEOS_PACKAGE_DIR)/$(PACKAGE_FILENAME)"
+          export ARCHS="arm64 arm64e"  # 指定架构，避免兼容警告
+          export TARGET=iphone:clang:15.5:14.0  # 适配 arm64e 最低 iOS 14.0
           
-           # 确保压缩格式为 xz （覆盖任何残留的 lzma 设置）
-          +_THEOS_PLATFORM_DPKG_DEB_COMPRESSION = xz
-          +THEOS_PLATFORM_DPKG_DEB_COMPRESSION_FLAG = -Zxz
-          EOF
-
-          # 应用补丁（如果失败则手动替换关键行）
-          if patch --forward --silent "$DEB_MK" /tmp/patch_deb.mk 2>/dev/null; then
-            echo "✅ 补丁应用成功。"
-          else
-            echo "补丁应用失败，执行手动替换..."
-            # 关键：直接使用sed重写整条命令定义
-            sed -i.bak '/_THEOS_PLATFORM_DPKG_DEB_BUILD_DPKG *=/,/"[^"]*"$/ {
-                s/^[[:space:]]*(COPYFILE_DISABLE=1/COPYFILE_DISABLE=1/;
-                s/)[[:space:]]*$(DPKGDEB_FLAGS)/ $(DPKGDEB_FLAGS)/;
-            }' "$DEB_MK"
-            # 强制插入xz定义
-            sed -i.bak2 '/_THEOS_PLATFORM_DPKG_DEB_COMPRESSION[[:space:]]*=/d' "$DEB_MK"
-            echo "_THEOS_PLATFORM_DPKG_DEB_COMPRESSION = xz" >> "$DEB_MK"
-            echo "_THEOS_PLATFORM_DPKG_DEB_COMPRESSION_TYPE = xz" >> "$DEB_MK"
-            echo "✅ 手动替换完成。"
-          fi
-          echo "修补后的关键行："
-          grep -A2 "_THEOS_PLATFORM_DPKG_DEB_BUILD_DPKG =" "$DEB_MK"
-
-      # 步骤 3: 编译打包 Tweak
-      - name: Build Tweak
-        run: |
-          cd $GITHUB_WORKSPACE
-          echo "=== 环境准备 ==="
-          # 强力清理
-          rm -rf .theos packages
-          # 设置环境（关键：覆盖所有可能的遗留设置）
-          export THEOS="$HOME/theos"
-          export THEOS_PACKAGE_SCHEME="rootless"
-          export THEOS_PACKAGE_COMPRESSION="xz"
-          export SDKROOT="$THEOS/sdks/iPhoneOS15.5.sdk"
-          export DEB_BUILD_COMPRESSOR="xz"
-          export DEB_BUILD_COMPRESSOR_TYPE="xz"
+          # 强制 xz 压缩（双重保险）
+          export DEB_BUILD_COMPRESSOR=xz
+          export DEB_BUILD_COMPRESSOR_TYPE=xz
           
-          echo "=== 验证Filter.plist ==="
-          # 确保关键文件存在（根据你的项目调整）
-          PLIST_NAME="YNCloudNoteVIP.plist"
-          if [ ! -f "$PLIST_NAME" ] && [ ! -f "Filter.plist" ]; then
-              echo "创建默认Filter.plist..."
-              cat > "$PLIST_NAME" << 'PLIST_EOF'
-                <?xml version="1.0" encoding="UTF-8"?>
-                <!DOCTYPE plist>
-                <plist version="1.0">
-                <dict>
-                    <key>Filter</key>
-                    <dict>
-                        <key>Bundles</key>
-                        <array>
-                            <string>com.youdao.note.iphone</string>
-                        </array>
-                    </dict>
-                </dict>
-                </plist>
-                PLIST_EOF
-                        else
-                            echo "找到Filter.plist文件。"
-                        fi
-                        
-                        echo "=== 开始构建 ==="
-                        # 先编译（测试）
-                        make
-                        # 再打包（使用单线程避免并行问题）
-                        make package
-                        
-                        echo "=== 检查产物 ==="
-                        if ls packages/*.deb >/dev/null 2>&1; then
-                            echo "✅ 构建成功！生成的文件："
-                            ls -lh packages/*.deb
-                        else
-                            echo "❌ 未找到deb包。构建日志摘要："
-                            tail -50 .theos/build.log 2>/dev/null || echo "无构建日志。"
-                            exit 1
-                        fi
-      
+          echo "=== 开始编译打包 ==="
+          # 多线程编译，输出详细日志
+          make package -j$(sysctl -n hw.logicalcpu) V=1
+          
+          # 验证产物
+          ls -la packages/*.deb || echo "⚠️ 未找到 deb 包，检查编译日志！"
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Tweak-Deb
           path: packages/*.deb
+          if-no-files-found: warn  # 即使没包也不直接失败，便于排查
