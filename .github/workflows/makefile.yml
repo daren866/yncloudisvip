@@ -42,58 +42,26 @@ jobs:
           echo "$HOME/theos/bin" >> $GITHUB_PATH
           echo "✅ 已创建并配置 dm.pl 脚本。"
 
-      - name: Fix Theos Packaging Command Syntax
+      # 关键修改：彻底移除 deb.mk 中所有多余的括号（替代之前的模糊修复）
+      - name: Fix Theos deb.mk Brackets (Force Remove)
         run: |
           DEB_MK_FILE="$HOME/theos/makefiles/package/deb.mk"
-          echo "正在修复打包命令语法..."
+          echo "=== 彻底清理 deb.mk 中的多余括号 ==="
           # 备份原文件
-          cp "$DEB_MK_FILE" "$DEB_MK_FILE.backup"
-          # 使用sed进行精确修复：找到包含特定模式的行并替换
-          sed -i.bak 's/^\s*(COPYFILE_DISABLE=1.*$(FAKEROOT).*-b.*$/COPYFILE_DISABLE=1 $(FAKEROOT) -r dm.pl $(THEOS_PLATFORM_DPKG_DEB_COMPRESSION_FLAG) $(DPKGDEB_FLAGS) -b "$(_THEOS_PLATFORM_DPKG_DEB_BUILD_DPKG_FAKEROOT_PATH)" "$(THEOS_PACKAGE_DIR)\/$(PACKAGE_FILENAME)"/' "$DEB_MK_FILE"
-          echo "✅ 已尝试修复打包命令。"
-      
-      - name: Fix Theos Packaging Command Syntax (Precise)
-        run: |
-          DEB_MK_FILE="$HOME/theos/makefiles/package/deb.mk"
-          echo "正在执行精确语法修复..."
-      
-          # 1. 首先，定位到引发错误的具体行。
-          # 错误命令的格式为: (COPYFILE_DISABLE=1 ... -Zxz) -z1 -b ...
-          # 我们需要移除包裹整个命令的、多余的外层括号，使其变为合法的 shell 命令。
+          cp "$DEB_MK_FILE" "$DEB_MK_FILE.bak"
           
-          # 2. 创建一个修复脚本，它更精确地定位和替换
-          cat > /tmp/fix_deb_mk.py << 'EOF'
-          import sys
-          import re
+          # 核心修复：删除文件中所有行的开头(、结尾)，以及中间多余的括号
+          # 方式1：暴力替换所有括号（最直接有效）
+          sed -i '' 's/[(]//g; s/[)]//g' "$DEB_MK_FILE"
           
-          with open(sys.argv[1], 'r') as f:
-              lines = f.readlines()
+          # 方式2（备选）：只删除包含 COPYFILE_DISABLE 的行的括号（更精准）
+          # sed -i '' '/COPYFILE_DISABLE/ { s/[(]//g; s/[)]//g; }' "$DEB_MK_FILE"
           
-          new_lines = []
-          for line in lines:
-              # 匹配以括号开头，包含 COPYFILE_DISABLE 和 -b 参数的行
-              # 这是导致 (command) -flag 语法错误的典型模式
-              if line.strip().startswith('(') and 'COPYFILE_DISABLE=1' in line and '-b' in line:
-                  print(f"发现待修复行: {line.strip()}")
-                  # 移除行首的 '(' 和行尾对应的 ')'
-                  fixed_line = re.sub(r'^\s*\(\s*(.*?)\s*\)\s*$', r'\1', line)
-                  if fixed_line != line:
-                      print(f"已修复为: {fixed_line.strip()}")
-                      line = fixed_line
-                  else:
-                      print("警告: 模式匹配但修复未生效，行可能较复杂。")
-              new_lines.append(line)
-          
-          with open(sys.argv[1], 'w') as f:
-              f.writelines(new_lines)
-          print("文件处理完成。")
-          EOF
+          # 验证修复结果
+          echo "=== 验证修复后的关键行 ==="
+          grep -n "COPYFILE_DISABLE" "$DEB_MK_FILE" | head -5
+          echo "✅ 括号清理完成。"
 
-          # 3. 执行 Python 脚本进行修复
-          python3 /tmp/fix_deb_mk.py "$DEB_MK_FILE"
-
-          echo "✅ 精确语法修复完成。"
-      
       # 步骤 3: 原来的编译和打包步骤
       - name: Build Tweak
         run: |
@@ -103,30 +71,27 @@ jobs:
           rm -rf .theos
           make clean 2>/dev/null || true
       
-          # 2. 关键：在编译打包前，设置环境变量，强制 dpkg-deb 使用 xz
-          # 这是最直接、最有效的一步，会直接影响 dpkg-deb 的行为
+          # 2. 关键：强制 dpkg-deb 使用 xz 压缩
           export DEB_BUILD_COMPRESSOR=xz
           export DEB_BUILD_COMPRESSOR_TYPE=xz
       
-          # 3. 验证并再次修补 Theos 内部规则
+          # 3. 修补 Theos 压缩配置（lzma 换 xz）
           PATCH_FILE="$HOME/theos/makefiles/package/deb.mk"
-          echo "=== 检查并修补打包规则文件 ==="
+          echo "=== 检查并修补压缩配置 ==="
           if grep -q "_THEOS_PLATFORM_DPKG_DEB_COMPRESSION.*lzma" "$PATCH_FILE"; then
-            echo "找到 lzma 配置，正在替换为 xz..."
-            sed -i.bak 's/_THEOS_PLATFORM_DPKG_DEB_COMPRESSION.*lzma/_THEOS_PLATFORM_DPKG_DEB_COMPRESSION = xz/g' "$PATCH_FILE"
+            sed -i '' 's/_THEOS_PLATFORM_DPKG_DEB_COMPRESSION.*lzma/_THEOS_PLATFORM_DPKG_DEB_COMPRESSION = xz/g' "$PATCH_FILE"
           else
-            echo "规则文件中未找到 lzma 配置，尝试直接添加 xz 配置..."
             echo "_THEOS_PLATFORM_DPKG_DEB_COMPRESSION = xz" >> "$PATCH_FILE"
           fi
       
-          # 4. 设置必要的 Theos 环境变量
+          # 4. 设置 Theos 环境变量
           export THEOS=$HOME/theos
           export THEOS_PACKAGE_SCHEME=rootless
           export SDKROOT=$HOME/theos/sdks/iPhoneOS15.5.sdk
       
           # 5. 开始构建和打包
           echo "=== 开始最终构建 ==="
-          make package
+          make package -j$(sysctl -n hw.logicalcpu)  # 启用多线程编译加速
       
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
