@@ -1,7 +1,7 @@
 # 工作流名称
 name: Build YoudaoNote VIP Tweak (iOS15 Rootless)
 
-# 触发条件：push代码到main分支、手动触发
+# 触发条件
 on:
   push:
     branches: [ main ]
@@ -10,17 +10,16 @@ on:
       - 'Tweak.x'
       - 'control'
       - '.github/workflows/build-tweak.yml'
-  workflow_dispatch: # 允许手动触发
+  workflow_dispatch: # 手动触发
 
-# 作业配置
 jobs:
   build:
     runs-on: macos-14
-    timeout-minutes: 20 # 延长超时时间，避免SDK下载超时
-    
+    timeout-minutes: 30 # 克隆仓库耗时较长，延长超时
+
     steps:
-      # 步骤1：检出仓库代码
-      - name: Checkout Code
+      # 步骤1：检出Tweak项目代码
+      - name: Checkout Tweak Code
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
@@ -29,86 +28,74 @@ jobs:
       - name: Install Homebrew Dependencies
         run: |
           brew update
-          brew install ldid xz curl git make unzip file wget
+          brew install ldid xz curl git make file
           brew upgrade ldid || true
 
-      # 步骤3：安装Theos
+      # 步骤3：安装Theos框架
       - name: Install Theos
         run: |
           mkdir -p $HOME/theos
-          # 优先HTTPS克隆Theos（SSH可能需要密钥，更易失败）
           git clone --depth=1 https://github.com/theos/theos.git $HOME/theos
           echo "THEOS=$HOME/theos" >> $GITHUB_ENV
           echo "PATH=$HOME/theos/bin:$PATH" >> $GITHUB_ENV
 
-      # 步骤4：安装iOS 15 SDK（使用可靠镜像源）
-      - name: Install iOS 15 SDK (Stable Source)
+      # 步骤4：克隆iOS-SDKs仓库（获取15.5 SDK目录）
+      - name: Clone iOS-SDKs Repository
         run: |
-          # 创建SDK目录
-          mkdir -p $HOME/theos/sdks
-          cd $HOME/theos/sdks
-          
-          # 可靠的iOS SDK镜像源（优先使用）
-          SDK_URL="https://sdks.shisho.dev/iPhoneOS15.0.sdk.xz"
-          # 备用源（主源失败时使用）
-          SDK_BACKUP_URL="https://github.com/woadle/iOS-SDKs/raw/master/iPhoneOS15.0.sdk.xz"
-          
-          # 下载SDK（优先主源，失败则用备用源）
-          echo "开始下载iOS 15.0 SDK（主源）..."
-          if ! curl -L --retry 3 --output iPhoneOS15.0.sdk.xz $SDK_URL; then
-            echo "主源下载失败，切换到备用源..."
-            curl -L --retry 3 --output iPhoneOS15.0.sdk.xz $SDK_BACKUP_URL
-          fi
-          
-          # 校验文件是否有效（大小至少100MB，避免下载空文件）
-          FILE_SIZE=$(stat -f%z "iPhoneOS15.0.sdk.xz")
-          MIN_SIZE=$((100 * 1024 * 1024)) # 100MB
-          if [ $FILE_SIZE -lt $MIN_SIZE ]; then
-            echo "错误：SDK文件大小过小（$FILE_SIZE 字节），下载失败"
+          # 克隆你指定的SDK仓库（浅克隆，只拉取最新版本，节省时间）
+          git clone --depth=1 https://github.com/xybp888/iOS-SDKs.git $HOME/iOS-SDKs
+          # 验证是否存在15.5 SDK目录
+          if [ ! -d "$HOME/iOS-SDKs/iPhoneOS15.5.sdk" ]; then
+            echo "错误：未找到iPhoneOS15.5.sdk目录"
+            ls -la $HOME/iOS-SDKs/ # 打印目录内容，便于排查
             exit 1
           fi
-          
-          # 解压xz格式的SDK包（iOS SDK通常为xz压缩，而非zip）
-          echo "开始解压iOS 15.0 SDK..."
-          xz -d iPhoneOS15.0.sdk.xz
-          mkdir -p iPhoneOS15.0.sdk
-          tar -xf iPhoneOS15.0.sdk.tar -C iPhoneOS15.0.sdk --strip-components=1
-          rm -f iPhoneOS15.0.sdk.tar
-          
-          # 验证SDK是否安装成功
-          if [ -f "$HOME/theos/sdks/iPhoneOS15.0.sdk/SDKSettings.plist" ]; then
-            echo "✅ iOS 15.0 SDK安装成功"
+          echo "✅ 成功克隆iOS-SDKs仓库，找到15.5 SDK目录"
+
+      # 步骤5：复制15.5 SDK到Theos目录
+      - name: Copy iOS 15.5 SDK to Theos
+        run: |
+          # 创建Theos的SDK目录
+          mkdir -p $HOME/theos/sdks
+          # 复制15.5 SDK目录到Theos
+          cp -r $HOME/iOS-SDKs/iPhoneOS15.5.sdk $HOME/theos/sdks/
+          # 验证复制结果
+          if [ -f "$HOME/theos/sdks/iPhoneOS15.5.sdk/SDKSettings.plist" ]; then
+            echo "✅ iOS 15.5 SDK已成功复制到Theos"
           else
-            echo "❌ iOS 15.0 SDK安装失败"
+            echo "❌ iOS 15.5 SDK复制失败"
             exit 1
           fi
 
-      # 步骤5：配置编译环境
+      # 步骤6：配置编译环境（适配15.5 SDK）
       - name: Configure Build Env
         run: |
-          echo "SDKROOT=$HOME/theos/sdks/iPhoneOS15.0.sdk" >> $GITHUB_ENV
+          # 指定15.5 SDK路径
+          echo "SDKROOT=$HOME/theos/sdks/iPhoneOS15.5.sdk" >> $GITHUB_ENV
+          # 适配iOS15.0+，架构兼容arm64/arm64e
           echo "ARCHS=arm64 arm64e" >> $GITHUB_ENV
-          echo "TARGET=iphone:clang:15.0:15.0" >> $GITHUB_ENV
+          echo "TARGET=iphone:clang:15.5:15.0" >> $GITHUB_ENV
           echo "THEOS_PACKAGE_SCHEME=rootless" >> $GITHUB_ENV
 
-      # 步骤6：编译Tweak
+      # 步骤7：编译Tweak项目
       - name: Build Tweak
         run: |
           cd $GITHUB_WORKSPACE
+          # 清理旧产物
           make clean
-          # 显式指定所有参数，确保编译正确
+          # 编译并打包（显式指定所有参数）
           make package \
             THEOS=$HOME/theos \
-            SDKROOT=$HOME/theos/sdks/iPhoneOS15.0.sdk \
+            SDKROOT=$HOME/theos/sdks/iPhoneOS15.5.sdk \
             ARCHS=arm64 arm64e \
-            TARGET=iphone:clang:15.0:15.0 \
+            TARGET=iphone:clang:15.5:15.0 \
             THEOS_PACKAGE_SCHEME=rootless
 
-      # 步骤7：上传产物
+      # 步骤8：上传编译产物
       - name: Upload Deb Package
         uses: actions/upload-artifact@v4
         with:
-          name: YNCloudNoteVIP-iOS15-Rootless
+          name: YNCloudNoteVIP-iOS15.5-Rootless
           path: |
             $GITHUB_WORKSPACE/packages/*.deb
             $GITHUB_WORKSPACE/README.md
