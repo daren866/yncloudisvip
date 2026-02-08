@@ -26,6 +26,26 @@ jobs:
           # 此命令会拉取构建所需的子模块（如libroot）
           git submodule update --init --recursive
           echo "✅ Theos vendor 目录初始化完成。"
+             - name: Patch Theos for XZ Compression
+        run: |
+          # 找到 Theos 的打包规则文件
+          THEOS_PACKAGE_RULES_FILE="$HOME/theos/makefiles/package/deb.mk"
+          
+          if [ ! -f "$THEOS_PACKAGE_RULES_FILE" ]; then
+            echo "❌ 找不到 Theos 的打包规则文件: $THEOS_PACKAGE_RULES_FILE"
+            exit 1
+          fi
+          
+          # 创建一个补丁，将内部调用的压缩参数从 lzma 改为 xz
+          # 关键：找到并替换 _THEOS_PLATFORM_DPKG_DEB_COMPRESSION 的内部定义
+          sed -i.bak 's/lzma/xz/g' "$THEOS_PACKAGE_RULES_FILE"
+          echo "✅ 已尝试修改 Theos 内部打包规则，将 lzma 替换为 xz。"
+          
+          # 额外安全措施：直接覆盖可能存在的旧压缩配置
+          echo "THEOS_PACKAGE_COMPRESSION = xz" > "$HOME/theos/makefiles/common.mk.tmp"
+          cat "$HOME/theos/makefiles/common.mk" >> "$HOME/theos/makefiles/common.mk.tmp"
+          mv "$HOME/theos/makefiles/common.mk.tmp" "$HOME/theos/makefiles/common.mk"
+          echo "✅ 已确保全局配置强制设为 xz。"
        
        - name: Build Tweak
         run: |
