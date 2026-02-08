@@ -57,7 +57,7 @@ jobs:
             
             # ========== 1. 下载Theos（保留成功逻辑）==========
             echo -e "\n=== 下载Theos ZIP ==="
-            wget --timeout=30 --tries=3 --quiet -O $HOME/theos.zip https://github.com/theos/theos/archive/refs/heads/master.zip
+            wget --timeout=30 --tries=3 --quiet -O $HOME/theos.zip https://github.com/tealbathingsuit/ellekit/archive/refs/heads/main.zip
             if [ -f "$HOME/theos.zip" ]; then
               # 解压前校验ZIP完整性
               unzip -t $HOME/theos.zip > /dev/null 2>&1 && {
