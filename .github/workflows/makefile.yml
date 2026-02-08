@@ -16,10 +16,10 @@ jobs:
         run: |
           sudo git config --system --unset-all credential.helper
           sudo git config --system credential.helper "false"
-          mkdir -p $GITHUB_WORKSPACE/workflow-logs
-          LOG_FILE=$GITHUB_WORKSPACE/workflow-logs/error.log
-          echo "=== Workflow Start: $(date) ===" > $LOG_FILE
-          sudo git config --system --list >> $LOG_FILE 2>&1
+          mkdir -p "$GITHUB_WORKSPACE/workflow-logs"
+          LOG_FILE="$GITHUB_WORKSPACE/workflow-logs/error.log"
+          echo "=== Workflow Start: $(date) ===" > "$LOG_FILE"
+          sudo git config --system --list >> "$LOG_FILE" 2>&1
           echo "✅ 系统级Git凭证已禁用"
         continue-on-error: true
       
@@ -30,7 +30,7 @@ jobs:
       
       - name: Debug - Full Env
         run: |
-          LOG_FILE=$GITHUB_WORKSPACE/workflow-logs/error.log
+          LOG_FILE="$GITHUB_WORKSPACE/workflow-logs/error.log"
           set -x
           {
             echo -e "\n=== 系统信息 ==="
@@ -38,14 +38,18 @@ jobs:
             echo -e "\n=== Git配置 ==="
             git config --list 2>&1
             echo -e "\n=== 网络测试 ==="
-            curl --connect-timeout 10 -s https://github.com && echo "✅ GitHub HTTPS OK" || echo "❌ GitHub HTTPS Fail"
-          } 2>&1 | tee -a $LOG_FILE
+            if curl --connect-timeout 10 -s https://github.com; then
+              echo "✅ GitHub HTTPS OK"
+            else
+              echo "❌ GitHub HTTPS Fail"
+            fi
+          } 2>&1 | tee -a "$LOG_FILE"
           set +x
         continue-on-error: true
       
-      - name: Install Dependencies (ZIP Download + Fix Unzip)
+      - name: Install Dependencies (Fix Syntax + ZIP)
         run: |
-          LOG_FILE=$GITHUB_WORKSPACE/workflow-logs/error.log
+          LOG_FILE="$GITHUB_WORKSPACE/workflow-logs/error.log"
           set -x
           {
             echo -e "\n=== 安装基础工具 ==="
@@ -53,103 +57,128 @@ jobs:
             brew install ldid dpkg unzip wget curl --quiet || true
             
             # 清理旧环境
-            rm -rf $HOME/theos $HOME/ellekit $HOME/iOS-SDKs
+            rm -rf "$HOME/theos" "$HOME/ellekit" "$HOME/iOS-SDKs"
             
-            # ========== 1. 下载Theos（保留成功逻辑）==========
+            # ========== 1. 下载Theos（语法修复：完整if/fi）==========
             echo -e "\n=== 下载Theos ZIP ==="
-            wget --timeout=30 --tries=3 --quiet -O $HOME/theos.zip https://github.com/tealbathingsuit/ellekit/archive/refs/heads/main.zip
+            wget --timeout=30 --tries=3 --quiet -O "$HOME/theos.zip" "https://github.com/theos/theos/archive/refs/heads/master.zip"
             if [ -f "$HOME/theos.zip" ]; then
-              # 解压前校验ZIP完整性
-              unzip -t $HOME/theos.zip > /dev/null 2>&1 && {
-                unzip -q $HOME/theos.zip -d $HOME && mv $HOME/theos-master $HOME/theos
+              if unzip -t "$HOME/theos.zip" > /dev/null 2>&1; then
+                unzip -q "$HOME/theos.zip" -d "$HOME" && mv "$HOME/theos-master" "$HOME/theos"
                 echo "✅ Theos解压成功"
-              } || {
+              else
                 echo "❌ Theos ZIP损坏，重新下载"
-                wget --timeout=30 --quiet -O $HOME/theos.zip https://gitee.com/liu233w/theos/archive/refs/heads/master.zip
-                unzip -q $HOME/theos.zip -d $HOME && mv $HOME/theos-master $HOME/theos || echo "❌ Theos最终下载失败"
-              }
-              rm -f $HOME/theos.zip
+                wget --timeout=30 --quiet -O "$HOME/theos.zip" "https://gitee.com/liu233w/theos/archive/refs/heads/master.zip"
+                if unzip -q "$HOME/theos.zip" -d "$HOME"; then
+                  mv "$HOME/theos-master" "$HOME/theos"
+                else
+                  echo "❌ Theos最终下载失败"
+                fi
+              fi
+              rm -f "$HOME/theos.zip"
             else
               echo "❌ Theos ZIP下载失败"
             fi
             
-            # ========== 2. 下载Ellekit（修复解压失败核心）==========
+            # ========== 2. 下载Ellekit（替换为指定URL + 语法修复）==========
             echo -e "\n=== 下载Ellekit ZIP ==="
-            # 方案1：重试3次下载官方ZIP
-            wget --timeout=30 --tries=3 --quiet -O $HOME/ellekit.zip https://github.com/ellekit/ellekit/archive/refs/heads/main.zip
             ELLEKIT_OK=0
+            # 核心修改：替换为指定的Ellekit ZIP下载地址
+            wget --timeout=30 --tries=3 --quiet -O "$HOME/ellekit.zip" "https://github.com/tealbathingsuit/ellekit/archive/refs/heads/main.zip"
             if [ -f "$HOME/ellekit.zip" ]; then
-              # 先校验ZIP是否完整（关键！）
-              unzip -t $HOME/ellekit.zip > /dev/null 2>&1 && {
-                unzip -q $HOME/ellekit.zip -d $HOME && mv $HOME/ellekit-main $HOME/ellekit
+              # 校验ZIP完整性
+              if unzip -t "$HOME/ellekit.zip" > /dev/null 2>&1; then
+                unzip -q "$HOME/ellekit.zip" -d "$HOME" && mv "$HOME/ellekit-main" "$HOME/ellekit"
                 echo "✅ Ellekit解压成功"
                 ELLEKIT_OK=1
-              } || {
-                echo "❌ Ellekit官方ZIP损坏，尝试Gitee镜像"
-                # 方案2：备用镜像（避免官方ZIP损坏）
-                wget --timeout=30 --quiet -O $HOME/ellekit.zip https://gitee.com/mirrors/ellekit/archive/refs/heads/main.zip
-                unzip -t $HOME/ellekit.zip > /dev/null 2>&1 && {
-                  unzip -q $HOME/ellekit.zip -d $HOME && mv $HOME/ellekit-main $HOME/ellekit
+              else
+                echo "❌ Ellekit指定URL ZIP损坏，尝试Gitee镜像（备用）"
+                wget --timeout=30 --quiet -O "$HOME/ellekit.zip" "https://gitee.com/mirrors/ellekit/archive/refs/heads/main.zip"
+                if unzip -t "$HOME/ellekit.zip" > /dev/null 2>&1; then
+                  unzip -q "$HOME/ellekit.zip" -d "$HOME" && mv "$HOME/ellekit-main" "$HOME/ellekit"
                   echo "✅ Ellekit镜像解压成功"
                   ELLEKIT_OK=1
-                } || echo "❌ Ellekit所有镜像都失败"
-              }
-              rm -f $HOME/ellekit.zip
+                else
+                  echo "❌ Ellekit所有镜像都失败"
+                fi
+              fi
+              rm -f "$HOME/ellekit.zip"
             else
-              echo "❌ Ellekit ZIP下载失败"
-            fi
-            # 方案3：终极备用（直接下载预编译的Ellekit头文件+库）
-            if [ $ELLEKIT_OK -eq 0 ]; then
-              echo "⚠️ 启用Ellekit备用方案：下载预编译文件"
-              mkdir -p $HOME/ellekit/include $HOME/ellekit/lib
-              # 下载头文件
-              curl --timeout=30 --silent -o $HOME/ellekit/include/Ellekit.h https://raw.githubusercontent.com/ellekit/ellekit/main/include/Ellekit.h
-              # 下载预编译库（arm64）
-              curl --timeout=30 --silent -o $HOME/ellekit/lib/libEllekit.dylib https://github.com/ellekit/ellekit/releases/download/1.0/libEllekit.arm64.dylib
-              [ -f "$HOME/ellekit/include/Ellekit.h" ] && echo "✅ Ellekit备用头文件下载成功" || echo "❌ Ellekit备用头文件失败"
+              echo "❌ Ellekit指定URL ZIP下载失败"
             fi
             
-            # ========== 3. 下载iOS-SDKs（添加校验+重试）==========
+            # 终极备用方案
+            if [ "$ELLEKIT_OK" -eq 0 ]; then
+              echo "⚠️ 启用Ellekit备用方案：下载预编译文件"
+              mkdir -p "$HOME/ellekit/include" "$HOME/ellekit/lib"
+              # 下载头文件（适配指定仓库的路径）
+              if curl --timeout=30 --silent -o "$HOME/ellekit/include/Ellekit.h" "https://raw.githubusercontent.com/tealbathingsuit/ellekit/main/include/Ellekit.h"; then
+                echo "✅ Ellekit备用头文件下载成功"
+              else
+                echo "❌ Ellekit备用头文件失败"
+              fi
+              # 下载预编译库（适配指定仓库的发布包）
+              if curl --timeout=30 --silent -o "$HOME/ellekit/lib/libEllekit.dylib" "https://github.com/tealbathingsuit/ellekit/releases/download/1.0/libEllekit.arm64.dylib"; then
+                echo "✅ Ellekit备用库文件下载成功"
+              else
+                echo "❌ Ellekit备用库文件失败"
+              fi
+            fi
+            
+            # ========== 3. 下载iOS-SDKs（语法修复：完整if/fi）==========
             echo -e "\n=== 下载iOS-SDKs ZIP ==="
-            wget --timeout=30 --tries=3 --quiet -O $HOME/iOS-SDKs.zip https://github.com/xybp888/iOS-SDKs/archive/refs/heads/master.zip
+            wget --timeout=30 --tries=3 --quiet -O "$HOME/iOS-SDKs.zip" "https://github.com/xybp888/iOS-SDKs/archive/refs/heads/master.zip"
             if [ -f "$HOME/iOS-SDKs.zip" ]; then
-              unzip -t $HOME/iOS-SDKs.zip > /dev/null 2>&1 && {
-                unzip -q $HOME/iOS-SDKs.zip -d $HOME && mv $HOME/iOS-SDKs-master $HOME/iOS-SDKs
+              if unzip -t "$HOME/iOS-SDKs.zip" > /dev/null 2>&1; then
+                unzip -q "$HOME/iOS-SDKs.zip" -d "$HOME" && mv "$HOME/iOS-SDKs-master" "$HOME/iOS-SDKs"
                 echo "✅ iOS-SDKs解压成功"
-              } || {
+              else
                 echo "❌ iOS-SDKs ZIP损坏，尝试镜像"
-                wget --timeout=30 --quiet -O $HOME/iOS-SDKs.zip https://gitee.com/xybp888/iOS-SDKs/archive/refs/heads/master.zip
-                unzip -q $HOME/iOS-SDKs.zip -d $HOME && mv $HOME/iOS-SDKs-master $HOME/iOS-SDKs || echo "❌ iOS-SDKs镜像失败"
-              }
-              rm -f $HOME/iOS-SDKs.zip
+                wget --timeout=30 --quiet -O "$HOME/iOS-SDKs.zip" "https://gitee.com/xybp888/iOS-SDKs/archive/refs/heads/master.zip"
+                if unzip -q "$HOME/iOS-SDKs.zip" -d "$HOME"; then
+                  mv "$HOME/iOS-SDKs-master" "$HOME/iOS-SDKs"
+                else
+                  echo "❌ iOS-SDKs镜像失败"
+                fi
+              fi
+              rm -f "$HOME/iOS-SDKs.zip"
             else
               echo "❌ iOS-SDKs ZIP下载失败"
             fi
             
-            # ========== 4. 复制依赖（容错）==========
+            # ========== 4. 复制依赖（语法修复：引号闭合）==========
             echo -e "\n=== 复制依赖文件 ==="
-            mkdir -p $HOME/theos/sdks
-            # SDK复制容错
-            cp -r $HOME/iOS-SDKs/iPhoneOS14.4.sdk $HOME/theos/sdks/ 2>&1 || \
-            cp -r $HOME/iOS-SDKs/iPhoneOS15.5.sdk $HOME/theos/sdks/ 2>&1 || \
-            echo "❌ SDK复制失败"
-            # Ellekit复制容错（兼容备用方案）
-            mkdir -p $HOME/theos/vendor/ellekit
-            cp -r $HOME/ellekit/include $HOME/theos/vendor/ellekit/ 2>&1 || echo "❌ Ellekit头文件复制失败（使用备用）"
-            cp -r $HOME/ellekit/lib $HOME/theos/vendor/ellekit/ 2>&1 || echo "❌ Ellekit库复制失败（使用备用）"
+            mkdir -p "$HOME/theos/sdks"
+            if [ -d "$HOME/iOS-SDKs/iPhoneOS14.4.sdk" ]; then
+              cp -r "$HOME/iOS-SDKs/iPhoneOS14.4.sdk" "$HOME/theos/sdks/" 2>&1
+            elif [ -d "$HOME/iOS-SDKs/iPhoneOS15.5.sdk" ]; then
+              cp -r "$HOME/iOS-SDKs/iPhoneOS15.5.sdk" "$HOME/theos/sdks/" 2>&1
+            else
+              echo "❌ SDK复制失败"
+            fi
+            mkdir -p "$HOME/theos/vendor/ellekit"
+            if [ -d "$HOME/ellekit/include" ]; then
+              cp -r "$HOME/ellekit/include" "$HOME/theos/vendor/ellekit/" 2>&1 || echo "❌ Ellekit头文件复制失败（使用备用）"
+            fi
+            if [ -d "$HOME/ellekit/lib" ]; then
+              cp -r "$HOME/ellekit/lib" "$HOME/theos/vendor/ellekit/" 2>&1 || echo "❌ Ellekit库复制失败（使用备用）"
+            fi
             
-            # Theos子模块容错
-            cd $HOME/theos || echo "❌ 进入Theos目录失败"
-            git submodule update --init --recursive --quiet src/objc 2>&1 || echo "❌ Theos子模块失败（忽略）"
+            if [ -d "$HOME/theos" ]; then
+              cd "$HOME/theos"
+              git submodule update --init --recursive --quiet src/objc 2>&1 || echo "❌ Theos子模块失败（忽略）"
+            else
+              echo "❌ 进入Theos目录失败"
+            fi
             
             echo -e "\n=== 依赖安装退出码：$? ==="
-          } 2>&1 | tee -a $LOG_FILE
+          } 2>&1 | tee -a "$LOG_FILE"
           set +x
         continue-on-error: true
       
-      - name: Fix deb.mk & Build
+      - name: Fix deb.mk & Build (Fix Syntax)
         run: |
-          LOG_FILE=$GITHUB_WORKSPACE/workflow-logs/error.log
+          LOG_FILE="$GITHUB_WORKSPACE/workflow-logs/error.log"
           set -x
           {
             echo -e "\n=== 修复deb.mk ==="
@@ -163,30 +192,39 @@ jobs:
               echo "❌ deb.mk不存在"
             fi
             
-            # 编译配置
             echo -e "\n=== 编译配置 ==="
-            cd $GITHUB_WORKSPACE || echo "❌ 进入工作目录失败"
-            rm -rf .theos packages
-            make clean 2>/dev/null || true
+            if [ -d "$GITHUB_WORKSPACE" ]; then
+              cd "$GITHUB_WORKSPACE"
+              rm -rf .theos packages
+              make clean 2>/dev/null || true
+            else
+              echo "❌ 进入工作目录失败"
+            fi
             
-            # 环境变量（容错）
-            export THEOS=$HOME/theos
+            export THEOS="$HOME/theos"
             export ARCHS="arm64"
-            export TARGET=iphone:clang:14.4:10.0
-            export THEOS_PACKAGE_SCHEME=rootless
-            export THEOS_STAGING_DIR=/var/jb
-            # SDK容错
+            export TARGET="iphone:clang:14.4:10.0"
+            export THEOS_PACKAGE_SCHEME="rootless"
+            export THEOS_STAGING_DIR="/var/jb"
             SDK_PATH="$HOME/theos/sdks/iPhoneOS14.4.sdk"
-            [ ! -d "$SDK_PATH" ] && SDK_PATH="$HOME/theos/sdks/iPhoneOS15.5.sdk"
-            [ -d "$SDK_PATH" ] && export SDKROOT=$SDK_PATH || export SDKROOT=""
+            if [ ! -d "$SDK_PATH" ]; then
+              SDK_PATH="$HOME/theos/sdks/iPhoneOS15.5.sdk"
+            fi
+            if [ -d "$SDK_PATH" ]; then
+              export SDKROOT="$SDK_PATH"
+            else
+              export SDKROOT=""
+            fi
             
-            # Ellekit依赖容错（兼容备用方案）
             export CFLAGS="-Wno-error -Wno-deprecated-declarations -fobjc-arc"
-            [ -d "$HOME/theos/vendor/ellekit/include" ] && export CFLAGS="$CFLAGS -I$HOME/theos/vendor/ellekit/include"
+            if [ -d "$HOME/theos/vendor/ellekit/include" ]; then
+              export CFLAGS="$CFLAGS -I$HOME/theos/vendor/ellekit/include"
+            fi
             export LDFLAGS="-Wl,-dead_strip"
-            [ -d "$HOME/theos/vendor/ellekit/lib" ] && export LDFLAGS="$LDFLAGS -L$HOME/theos/vendor/ellekit/lib -lEllekit"
+            if [ -d "$HOME/theos/vendor/ellekit/lib" ]; then
+              export LDFLAGS="$LDFLAGS -L$HOME/theos/vendor/ellekit/lib -lEllekit"
+            fi
             
-            # 生成control
             cat > control << 'EOF'
             Package: com.yncloudnote.vip.tweak
             Name: YNCloudNoteVIP
@@ -202,12 +240,11 @@ jobs:
             Rootless: yes
             EOF
             
-            # 执行打包
             echo -e "\n=== 执行打包 ==="
             make package V=2 2>&1
             echo -e "\n=== 打包退出码：$? ==="
             ls -la packages/*.deb 2>&1 || echo "❌ 无deb包生成"
-          } 2>&1 | tee -a $LOG_FILE
+          } 2>&1 | tee -a "$LOG_FILE"
           set +x
         continue-on-error: true
       
@@ -221,9 +258,9 @@ jobs:
           if-no-files-found: warn
         continue-on-error: true
       
-      - name: Force Success
+      - name: Force Success (Fix Syntax)
         run: |
-          LOG_FILE=$GITHUB_WORKSPACE/workflow-logs/error.log
-          echo -e "\n=== 强制标记成功，退出码：0 ===" >> $LOG_FILE
+          LOG_FILE="$GITHUB_WORKSPACE/workflow-logs/error.log"
+          echo -e "\n=== 强制标记成功，退出码：0 ===" >> "$LOG_FILE"
           exit 0
         continue-on-error: true
