@@ -1,92 +1,70 @@
-name: Build YoudaoNote VIP Tweak (iOS15 Rootless)
+name: Build YoudaoNote VIP Tweak
 
 on:
   push:
     branches: [ main ]
-    paths:
-      - 'Makefile'
-      - 'Tweak.x'
-      - 'control'
-      - '.github/workflows/build-tweak.yml'
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: macos-14
-    timeout-minutes: 30
-
+    
     steps:
-      - name: Checkout Tweak Code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Install Homebrew Dependencies
+      - uses: actions/checkout@v4
+      
+      - name: Install Dependencies
         run: |
-          brew update
-          brew install ldid xz curl git make file dpkg
-          brew upgrade ldid || true
-
-      - name: Install Theos
-        run: |
-          mkdir -p $HOME/theos
+          brew install ldid dpkg
           git clone --depth=1 https://github.com/theos/theos.git $HOME/theos
-          if [ ! -f "$HOME/theos/makefiles/common.mk" ]; then
-            echo "错误：Theos安装失败，缺少common.mk"
-            ls -la $HOME/theos/makefiles/
-            exit 1
-          fi
-          echo "THEOS=$HOME/theos" >> $GITHUB_ENV
-          echo "PATH=$HOME/theos/bin:$PATH" >> $GITHUB_ENV
-
-      - name: Clone iOS-SDKs Repository
-        run: |
           git clone --depth=1 https://github.com/xybp888/iOS-SDKs.git $HOME/iOS-SDKs
-          if [ ! -d "$HOME/iOS-SDKs/iPhoneOS15.5.sdk" ]; then
-            echo "错误：未找到iPhoneOS15.5.sdk目录"
-            ls -la $HOME/iOS-SDKs/
-            exit 1
-          fi
-          echo "✅ 成功克隆iOS-SDKs仓库，找到15.5 SDK目录"
-
-      - name: Copy iOS 15.5 SDK to Theos
-        run: |
           mkdir -p $HOME/theos/sdks
           cp -r $HOME/iOS-SDKs/iPhoneOS15.5.sdk $HOME/theos/sdks/
-          if [ -f "$HOME/theos/sdks/iPhoneOS15.5.sdk/SDKSettings.plist" ]; then
-            echo "✅ iOS 15.5 SDK已成功复制到Theos"
-          else
-            echo "❌ iOS 15.5 SDK复制失败"
-            exit 1
-          fi
-
-      - name: Build Tweak (Simplified)
+      
+      - name: Build Tweak
         run: |
           cd $GITHUB_WORKSPACE
           
-          # 使用更简单的方法：直接修改Makefile内容
-          echo "正在准备Makefile..."
+          # 设置环境变量
+          export THEOS=$HOME/theos
+          export THEOS_PACKAGE_SCHEME=rootless
+          export SDKROOT=$HOME/theos/sdks/iPhoneOS15.5.sdk
           
-          # 如果Makefile中已经包含dpkg-deb设置，就不用修改
-          if ! grep -q "THEOS_PACKAGE_TOOL" Makefile; then
-            echo "添加THEOS_PACKAGE_TOOL设置到Makefile..."
-            cp Makefile Makefile.backup
-            # 在THEOS_PACKAGE_SCHEME行后添加THEOS_PACKAGE_TOOL
-            awk '/THEOS_PACKAGE_SCHEME = rootless/ {print $0; print "THEOS_PACKAGE_TOOL = dpkg-deb"; next} 1' Makefile.backup > Makefile
+          echo "===== 开始编译 ====="
+          make clean || true
+          
+          echo "===== 开始编译（只编译不打包）===="
+          make all || {
+            echo "编译失败，查看日志："
+            tail -100 .theos/build.log 2>/dev/null || true
+            exit 1
+          }
+          
+          echo "===== 尝试打包 ====="
+          # 使用 FINALPACKAGE=1 跳过 dm.pl 检查
+          make package FINALPACKAGE=1 || {
+            echo "标准打包失败，尝试手动打包..."
+            # 手动创建 .deb 包
+            if [ -d ".theos/obj/deb" ]; then
+              mkdir -p packages
+              dpkg-deb -b .theos/obj/deb packages/
+              echo "手动打包完成"
+            else
+              echo "错误：找不到 .theos/obj/deb 目录"
+              exit 1
+            fi
+          }
+          
+          echo "检查结果..."
+          if ls packages/*.deb 2>/dev/null; then
+            echo "✅ 构建成功！"
+            ls -la packages/*.deb
+          else
+            echo "❌ 未生成 .deb 文件"
+            exit 1
           fi
-          
-          echo "Makefile内容:"
-          cat Makefile
-          
-          echo "===== 开始构建 ====="
-          make clean THEOS=$HOME/theos
-          make package THEOS=$HOME/theos THEOS_PACKAGE_SCHEME=rootless
-
-      - name: Upload Deb Package
+      
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: YNCloudNoteVIP-iOS15.5-Rootless
-          path: |
-            $GITHUB_WORKSPACE/packages/*.deb
-            $GITHUB_WORKSPACE/README.md
-          retention-days: 90
+          name: YNCloudNoteVIP-Tweak
+          path: packages/*.deb
