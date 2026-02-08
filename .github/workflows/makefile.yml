@@ -1,4 +1,4 @@
-name: Build YoudaoNote VIP Tweak
+name: Build YoudaoNote VIP Tweak (Ellekit + iPhone7 Rootless)
 
 on:
   push:
@@ -8,117 +8,112 @@ on:
 jobs:
   build:
     runs-on: macos-14
+    timeout-minutes: 15
     
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
       
-      # 步骤1：安装依赖 + 克隆干净的 Theos（不修改任何 Theos 内置文件）
-      - name: Install Dependencies & Clean Theos
+      # 步骤1：安装依赖（含Ellekit，无根越狱核心）
+      - name: Install Dependencies (Ellekit + Theos)
         run: |
-          set +e
-          # 安装基础工具
-          brew install ldid dpkg fakeroot
-          # 清理旧的 Theos 避免污染
-          rm -rf $HOME/theos
-          # 克隆干净的 Theos（不修改其任何文件）
-          git clone --depth=1 https://github.com/theos/theos.git $HOME/theos
-          git clone --depth=1 https://github.com/xybp888/iOS-SDKs.git $HOME/iOS-SDKs
+          # 基础工具
+          brew update --quiet
+          brew install ldid dpkg --quiet
+          
+          # 清理旧环境
+          rm -rf $HOME/theos $HOME/ellekit
+          
+          # 克隆精简版Theos（适配Rootless）
+          git clone --depth=1 --single-branch https://github.com/theos/theos.git $HOME/theos --quiet
+          # 克隆Ellekit（无根越狱必备框架）
+          git clone --depth=1 --single-branch https://github.com/ellekit/ellekit.git $HOME/ellekit --quiet
+          
+          # 配置iOS 14.4 SDK（适配iPhone7）
+          git clone --depth=1 https://github.com/xybp888/iOS-SDKs.git $HOME/iOS-SDKs --quiet
           mkdir -p $HOME/theos/sdks
-          cp -r $HOME/iOS-SDKs/iPhoneOS15.5.sdk $HOME/theos/sdks/
-          # 初始化 submodule
+          cp -r $HOME/iOS-SDKs/iPhoneOS14.4.sdk $HOME/theos/sdks/
+          
+          # 将Ellekit集成到Theos（方便编译链接）
+          mkdir -p $HOME/theos/vendor/ellekit
+          cp -r $HOME/ellekit/include $HOME/theos/vendor/ellekit/
+          cp -r $HOME/ellekit/lib $HOME/theos/vendor/ellekit/
+          
+          # 初始化Theos必要依赖
           cd $HOME/theos
-          git submodule update --init --recursive
-          echo "✅ Theos 安装完成（原始未修改版本）。"
-          set -e
+          git submodule update --init --recursive --quiet src/objc
+          echo "✅ Theos + Ellekit 安装完成（适配iPhone7无根越狱）。"
 
-      # 步骤2：手动编译 Tweak（只编译，不使用 Theos 打包）
-      - name: Compile Tweak Manually
+      # 步骤2：修复deb.mk（安全兼容+Rootless）
+      - name: Fix deb.mk (Rootless + iPhone7)
         run: |
-          set +e
-          cd $GITHUB_WORKSPACE
-          # 清理缓存
-          rm -rf .theos build stage packages
-          mkdir -p build stage/DEBIAN stage/Library/MobileSubstrate/DynamicLibraries
+          DEB_MK_FILE="$HOME/theos/makefiles/package/deb.mk"
+          [ ! -f "$DEB_MK_FILE.safe.bak" ] && cp "$DEB_MK_FILE" "$DEB_MK_FILE.safe.bak"
           
-          # 设置编译环境变量
+          # 替换打包命令（适配Rootless）
+          sed -i '' '/COPYFILE_DISABLE=1/ c\
+          COPYFILE_DISABLE=1 $(FAKEROOT) -r dm.pl $(THEOS_PLATFORM_DPKG_DEB_COMPRESSION_FLAG) $(DPKGDEB_FLAGS) -b "$(_THEOS_PLATFORM_DPKG_DEB_BUILD_DPKG_FAKEROOT_PATH)" "$(THEOS_PACKAGE_DIR)/$(PACKAGE_FILENAME)"
+          ' "$DEB_MK_FILE"
+          
+          # 强制gzip压缩（iPhone7老系统兼容）+ Rootless路径
+          sed -i '' 's/_THEOS_PLATFORM_DPKG_DEB_COMPRESSION = lzma/_THEOS_PLATFORM_DPKG_DEB_COMPRESSION = gzip/g' "$DEB_MK_FILE"
+          echo -e "_THEOS_PLATFORM_DPKG_DEB_COMPRESSION = gzip\nTHEOS_STAGING_DIR = /var/jb" >> "$DEB_MK_FILE"
+          echo "✅ deb.mk 修复完成（Ellekit + Rootless + iPhone7）。"
+
+      # 步骤3：Theos编译（Ellekit + 无根 + iPhone7优化）
+      - name: Build with Theos (Ellekit + Rootless + iPhone7)
+        run: |
+          cd $GITHUB_WORKSPACE
+          rm -rf .theos packages
+          make clean 2>/dev/null || true
+          
+          # ========== 核心配置：Ellekit + 无根 + iPhone7 ==========
           export THEOS=$HOME/theos
-          export SDKROOT=$HOME/theos/sdks/iPhoneOS15.5.sdk
-          export ARCHS="arm64 arm64e"
-          export TARGET=iphone:clang:15.5:14.0
-          export CFLAGS="-fobjc-arc -Wno-deprecated-declarations"
-          export LDFLAGS="-dynamiclib -framework Foundation -framework UIKit"
+          export ARCHS="arm64"                # 仅iPhone7支持的arm64
+          export TARGET=iphone:clang:14.4:10.0 # iOS10+（iPhone7原生）
+          export THEOS_PACKAGE_SCHEME=rootless # 强制无根模式
+          export THEOS_STAGING_DIR=/var/jb     # 无根越狱根路径（关键）
+          export SDKROOT=$HOME/theos/sdks/iPhoneOS14.4.sdk
           
-          # 1. 预编译 Tweak.x（Logos 语法转 Objective-C）
-          echo "=== 预编译 Logos 语法 ==="
-          $THEOS/bin/nic.pl > /dev/null 2>&1 # 初始化 nic 避免报错
-          $THEOS/bin/logos.pl Tweak.x > build/Tweak.m
+          # ========== Ellekit编译依赖（替代MobileSubstrate）==========
+          export CFLAGS="-Wno-error -Wno-deprecated-declarations -fobjc-arc -I$HOME/theos/vendor/ellekit/include"
+          export LDFLAGS="-Wl,-dead_strip -L$HOME/theos/vendor/ellekit/lib -lEllekit" # 链接Ellekit
           
-          # 2. 编译成目标文件（arm64 + arm64e）
-          echo "=== 编译 arm64 架构 ==="
-          clang -arch arm64 -isysroot $SDKROOT -c build/Tweak.m -o build/Tweak-arm64.o $CFLAGS
-          echo "=== 编译 arm64e 架构 ==="
-          clang -arch arm64e -isysroot $SDKROOT -c build/Tweak.m -o build/Tweak-arm64e.o $CFLAGS
+          # ========== 高效编译 + 无根打包 ==========
+          export MAKEFLAGS="-j$(sysctl -n hw.logicalcpu)"
+          export DEB_BUILD_COMPRESSOR=gzip
+          export DEB_BUILD_COMPRESSOR_TYPE=gzip
           
-          # 3. 链接成动态库（合并架构）
-          echo "=== 链接动态库 ==="
-          ldid -Sent.plist build/Tweak # 先准备签名文件（如果有）
-          lipo -create build/Tweak-arm64.o build/Tweak-arm64e.o -output build/Tweak.o
-          clang -arch arm64 -arch arm64e -isysroot $SDKROOT -shared build/Tweak.o -o stage/Library/MobileSubstrate/DynamicLibraries/YNCloudNoteVIP.dylib $LDFLAGS
-          
-          # 4. 签名动态库
-          echo "=== 签名动态库 ==="
-          ldid -Sent.plist stage/Library/MobileSubstrate/DynamicLibraries/YNCloudNoteVIP.dylib
-          
-          # 5. 复制 plist 文件（Tweak 配置）
-          cp Tweak.plist stage/Library/MobileSubstrate/DynamicLibraries/
-          echo "✅ Tweak 编译完成，已生成动态库。"
-          set -e
-
-      # 步骤3：手动打包 deb 包（绕开 Theos 的 deb.mk）
-      - name: Package DEB Manually
-        run: |
-          set +e
-          cd $GITHUB_WORKSPACE
-          mkdir -p packages
-          
-          # 1. 创建 DEBIAN/control 文件（deb 包必需）
-          echo "=== 创建 DEBIAN 控制文件 ==="
-          cat > stage/DEBIAN/control << 'EOF'
+          # 生成适配Ellekit的control文件（覆盖默认依赖）
+          echo "=== 生成Ellekit专属control ==="
+          cat > control << 'EOF'
           Package: com.yncloudnote.vip.tweak
           Name: YNCloudNoteVIP
           Version: 0.0.1-1
           Architecture: iphoneos-arm
-          Description: YoudaoNote VIP Tweak
+          Description: YoudaoNote VIP Tweak (Ellekit + Rootless + iPhone7)
           Author: Your Name
           Maintainer: Your Name
           Section: Tweaks
-          Depends: mobilesubstrate
+          Depends: ellekit (>= 1.0) # 依赖Ellekit，替代mobilesubstrate
           Homepage: https://github.com/your-repo
           Priority: optional
+          Rootless: yes # 标记为无根越狱包
           EOF
           
-          # 2. 设置权限
-          chmod 0755 stage/DEBIAN
-          chmod 0644 stage/DEBIAN/control
-          
-          # 3. 用 dpkg-deb 手动打包（强制 xz 压缩）
-          echo "=== 手动打包 deb 包 ==="
-          dpkg-deb -Zxz -b stage packages/com.yncloudnote.vip.tweak_0.0.1-1_iphoneos-arm.deb
+          # 执行Theos原生打包
+          echo "=== 开始编译（Ellekit + iPhone7无根）==="
+          make package V=1
           
           # 验证产物
           ls -la packages/*.deb
-          if [ -f "packages/com.yncloudnote.vip.tweak_0.0.1-1_iphoneos-arm.deb" ]; then
-            echo "✅ deb 包生成成功！"
-          else
-            echo "❌ deb 包生成失败！"
-            exit 1
-          fi
-          set -e
+          echo "✅ 编译完成！适配iPhone7无根越狱 + Ellekit。"
 
-      # 步骤4：上传产物
-      - name: Upload Artifact
+      # 步骤4：上传产物（标记Ellekit+无根）
+      - name: Upload Ellekit-Rootless DEB (iPhone7)
         uses: actions/upload-artifact@v4
         with:
-          name: Tweak-Deb
+          name: YoudaoNoteVIP-Tweak-Ellekit-Rootless-iPhone7 (arm64)
           path: packages/*.deb
-          if-no-files-found: error # 没包则标记失败
+          if-no-files-found: error
