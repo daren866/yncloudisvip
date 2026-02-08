@@ -113,19 +113,17 @@ jobs:
           # 清理旧构建
           rm -rf .theos packages
           
-          # 生成control文件
-          cat > control << 'EOF'
-Package: com.yncloudnote.vip.tweak
-Name: YNCloudNoteVIP
-Version: 1.0.0
-Architecture: iphoneos-arm64
-Description: YoudaoNote VIP Tweak
-Author: Your Name
-Maintainer: Your Name
-Section: Tweaks
-Depends: ellekit
-Rootless: true
-EOF
+          # 生成control文件 - 使用echo命令避免heredoc问题
+          echo "Package: com.yncloudnote.vip.tweak" > control
+          echo "Name: YNCloudNoteVIP" >> control
+          echo "Version: 1.0.0" >> control
+          echo "Architecture: iphoneos-arm64" >> control
+          echo "Description: YoudaoNote VIP Tweak" >> control
+          echo "Author: Your Name" >> control
+          echo "Maintainer: Your Name" >> control
+          echo "Section: Tweaks" >> control
+          echo "Depends: ellekit" >> control
+          echo "Rootless: true" >> control
           
           # 尝试构建
           echo "开始构建..." >> "${LOG_FILE}"
@@ -151,7 +149,6 @@ EOF
           path: |
             ${{ github.workspace }}/packages/*.deb
             ${{ github.workspace }}/workflow-logs/error.log
-            ${{ github.workspace }}/.theos/
           if-no-files-found: warn
           retention-days: 7
 
