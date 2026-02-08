@@ -15,78 +15,128 @@ jobs:
         with:
           fetch-depth: 1
       
-      # 步骤1：安装依赖（含Ellekit，无根越狱核心）
+      # 步骤0：调试信息前置（输出环境/网络/权限信息）
+      - name: Debug - Env & Network Info
+        run: |
+          # 输出详细环境信息（用于排查）
+          echo "=== 系统信息 ==="
+          uname -a
+          sw_vers
+          echo "=== Git 版本 & 配置 ==="
+          git --version
+          git config --list
+          echo "=== GitHub 上下文 ==="
+          echo "GITHUB_ACTOR: $GITHUB_ACTOR"
+          echo "GITHUB_TOKEN: ${GITHUB_TOKEN:0:10}..." # 脱敏输出前10位
+          echo "=== 网络测试 ==="
+          curl -v https://github.com > /dev/null 2>&1
+          echo "=== 目录权限 ==="
+          ls -la $HOME
+          mkdir -p $HOME/test && rm -rf $HOME/test
+          echo "✅ 调试信息输出完成"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 注入默认token
+      
+      # 步骤1：安装依赖（修复Git认证 + 详细日志）
       - name: Install Dependencies (Ellekit + Theos)
         run: |
-          # 基础工具
-          brew update --quiet
-          brew install ldid dpkg --quiet
+          # 关闭过度容错，让错误直接暴露（关键！）
+          set -euo pipefail
+          # 开启命令执行日志（每行命令都输出，便于定位哪步错）
+          set -x
+          
+          # 基础工具安装（带详细日志）
+          brew update --verbose
+          brew install ldid dpkg --verbose
           
           # 清理旧环境
-          rm -rf $HOME/theos $HOME/ellekit
+          rm -rf $HOME/theos $HOME/ellekit $HOME/iOS-SDKs
           
-          # 克隆精简版Theos（适配Rootless）
-          git clone --depth=1 --single-branch https://github.com/theos/theos.git $HOME/theos --quiet
-          # 克隆Ellekit（无根越狱必备框架）
-          git clone --depth=1 --single-branch https://github.com/ellekit/ellekit.git $HOME/ellekit --quiet
+          # ========== 修复Git认证问题核心 ==========
+          # 方案1：用GITHUB_TOKEN替代匿名HTTPS克隆（避免认证弹窗）
+          # 原理：GitHub Actions默认提供GITHUB_TOKEN，可免认证克隆公有仓库
+          export GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
+          git config --global url."https://${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
+          # 禁用Git交互式认证（避免弹出用户名密码输入）
+          git config --global core.askpass ""
+          git config --global credential.helper "store --file=/tmp/git-credential"
           
-          # 配置iOS 14.4 SDK（适配iPhone7）
-          git clone --depth=1 https://github.com/xybp888/iOS-SDKs.git $HOME/iOS-SDKs --quiet
+          # 克隆仓库（加--verbose输出详细克隆日志）
+          echo "=== 克隆Theos（带认证）==="
+          git clone --depth=1 --single-branch --verbose https://github.com/theos/theos.git $HOME/theos
+          
+          echo "=== 克隆Ellekit（带认证）==="
+          git clone --depth=1 --single-branch --verbose https://github.com/ellekit/ellekit.git $HOME/ellekit
+          
+          echo "=== 克隆iOS-SDKs（带认证）==="
+          git clone --depth=1 --verbose https://github.com/xybp888/iOS-SDKs.git $HOME/iOS-SDKs
+          
+          # 恢复Theos目录结构
           mkdir -p $HOME/theos/sdks
           cp -r $HOME/iOS-SDKs/iPhoneOS14.4.sdk $HOME/theos/sdks/
           
-          # 将Ellekit集成到Theos（方便编译链接）
+          # 集成Ellekit到Theos
           mkdir -p $HOME/theos/vendor/ellekit
           cp -r $HOME/ellekit/include $HOME/theos/vendor/ellekit/
           cp -r $HOME/ellekit/lib $HOME/theos/vendor/ellekit/
           
-          # 初始化Theos必要依赖
+          # 初始化Theos依赖（带日志）
           cd $HOME/theos
-          git submodule update --init --recursive --quiet src/objc
+          git submodule update --init --recursive --verbose src/objc
+          
+          # 关闭调试日志
+          set +x
           echo "✅ Theos + Ellekit 安装完成（适配iPhone7无根越狱）。"
-
-      # 步骤2：修复deb.mk（安全兼容+Rootless）
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 注入token到环境变量
+      
+      # 步骤2：修复deb.mk（带错误捕获）
       - name: Fix deb.mk (Rootless + iPhone7)
         run: |
+          set -euo pipefail
+          set -x
           DEB_MK_FILE="$HOME/theos/makefiles/package/deb.mk"
           [ ! -f "$DEB_MK_FILE.safe.bak" ] && cp "$DEB_MK_FILE" "$DEB_MK_FILE.safe.bak"
           
-          # 替换打包命令（适配Rootless）
+          # 替换打包命令
           sed -i '' '/COPYFILE_DISABLE=1/ c\
           COPYFILE_DISABLE=1 $(FAKEROOT) -r dm.pl $(THEOS_PLATFORM_DPKG_DEB_COMPRESSION_FLAG) $(DPKGDEB_FLAGS) -b "$(_THEOS_PLATFORM_DPKG_DEB_BUILD_DPKG_FAKEROOT_PATH)" "$(THEOS_PACKAGE_DIR)/$(PACKAGE_FILENAME)"
           ' "$DEB_MK_FILE"
           
-          # 强制gzip压缩（iPhone7老系统兼容）+ Rootless路径
+          # 强制gzip压缩 + Rootless路径
           sed -i '' 's/_THEOS_PLATFORM_DPKG_DEB_COMPRESSION = lzma/_THEOS_PLATFORM_DPKG_DEB_COMPRESSION = gzip/g' "$DEB_MK_FILE"
           echo -e "_THEOS_PLATFORM_DPKG_DEB_COMPRESSION = gzip\nTHEOS_STAGING_DIR = /var/jb" >> "$DEB_MK_FILE"
+          
+          set +x
           echo "✅ deb.mk 修复完成（Ellekit + Rootless + iPhone7）。"
-
-      # 步骤3：Theos编译（Ellekit + 无根 + iPhone7优化）
+      
+      # 步骤3：编译打包（带全量错误日志）
       - name: Build with Theos (Ellekit + Rootless + iPhone7)
         run: |
+          set -euo pipefail
+          set -x
           cd $GITHUB_WORKSPACE
           rm -rf .theos packages
-          make clean 2>/dev/null || true
+          make clean 2>/dev/null || true # 仅clean容错，其他命令严格检查
           
-          # ========== 核心配置：Ellekit + 无根 + iPhone7 ==========
+          # 核心配置
           export THEOS=$HOME/theos
-          export ARCHS="arm64"                # 仅iPhone7支持的arm64
-          export TARGET=iphone:clang:14.4:10.0 # iOS10+（iPhone7原生）
-          export THEOS_PACKAGE_SCHEME=rootless # 强制无根模式
-          export THEOS_STAGING_DIR=/var/jb     # 无根越狱根路径（关键）
+          export ARCHS="arm64"
+          export TARGET=iphone:clang:14.4:10.0
+          export THEOS_PACKAGE_SCHEME=rootless
+          export THEOS_STAGING_DIR=/var/jb
           export SDKROOT=$HOME/theos/sdks/iPhoneOS14.4.sdk
           
-          # ========== Ellekit编译依赖（替代MobileSubstrate）==========
+          # Ellekit编译依赖
           export CFLAGS="-Wno-error -Wno-deprecated-declarations -fobjc-arc -I$HOME/theos/vendor/ellekit/include"
-          export LDFLAGS="-Wl,-dead_strip -L$HOME/theos/vendor/ellekit/lib -lEllekit" # 链接Ellekit
+          export LDFLAGS="-Wl,-dead_strip -L$HOME/theos/vendor/ellekit/lib -lEllekit"
           
-          # ========== 高效编译 + 无根打包 ==========
+          # 高效编译配置
           export MAKEFLAGS="-j$(sysctl -n hw.logicalcpu)"
           export DEB_BUILD_COMPRESSOR=gzip
           export DEB_BUILD_COMPRESSOR_TYPE=gzip
           
-          # 生成适配Ellekit的control文件（覆盖默认依赖）
-          echo "=== 生成Ellekit专属control ==="
+          # 生成control文件
           cat > control << 'EOF'
           Package: com.yncloudnote.vip.tweak
           Name: YNCloudNoteVIP
@@ -96,21 +146,26 @@ jobs:
           Author: Your Name
           Maintainer: Your Name
           Section: Tweaks
-          Depends: ellekit (>= 1.0) # 依赖Ellekit，替代mobilesubstrate
+          Depends: ellekit (>= 1.0)
           Homepage: https://github.com/your-repo
           Priority: optional
-          Rootless: yes # 标记为无根越狱包
+          Rootless: yes
           EOF
           
-          # 执行Theos原生打包
-          echo "=== 开始编译（Ellekit + iPhone7无根）==="
-          make package V=1
+          # 执行打包（V=2输出最详细日志）
+          make package V=2
           
-          # 验证产物
+          # 验证产物（严格检查，无包则直接失败）
           ls -la packages/*.deb
+          if [ ! -f "packages/*.deb" ]; then
+            echo "❌ 未生成deb包！"
+            exit 1
+          fi
+          
+          set +x
           echo "✅ 编译完成！适配iPhone7无根越狱 + Ellekit。"
-
-      # 步骤4：上传产物（标记Ellekit+无根）
+      
+      # 步骤4：上传产物（严格检查）
       - name: Upload Ellekit-Rootless DEB (iPhone7)
         uses: actions/upload-artifact@v4
         with:
