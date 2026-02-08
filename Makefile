@@ -21,11 +21,12 @@ YNCloudNoteVIP_CFLAGS = -fobjc-arc -Wno-error=deprecated-declarations -Wno-unuse
 # 依赖的系统框架
 YNCloudNoteVIP_FRAMEWORKS = Foundation UIKit
 # 依赖的LibHooker库（无根越狱必需）
-YNCloudNoteVIP_LIBRARIES = hooker
+YNCloudNoteVIP_LIBRARIES = substrate
+
+# 使用 dpkg-deb 替代 dm.pl（重要！）
+ifeq ($(THEOS_PACKAGE_SCHEME),rootless)
+    THEOS_PACKAGE_TOOL = dpkg-deb
+endif
 
 # 第二步：引入Tweak专属打包规则（必须最后一行）
 include $(THEOS_MAKE_PATH)/tweak.mk
-
-# 可选：清理后执行安装（如果需要）
-after-install::
-	install.exec "killall -9 YoudaoNote || true"
