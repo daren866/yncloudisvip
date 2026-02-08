@@ -1,0 +1,11 @@
+Package: com.yncloudnote.vip.tweak
+Name: YNCloudNoteVIP
+Version: 0.0.1
+Architecture: iphoneos-arm64
+Description: Unlock VIP features for YoudaoNote on iOS15+ rootless jailbreak
+Maintainer: Your Name <your@email@example.com>
+Author: Your Name <your@email@example.com>
+Section: Tweaks
+Depends: mobilesubstrate, libhooker (>=1.0), firmware (>=15.0), firmware (<=16.0)
+Homepage: https://github.com/yourname/YNCloudNoteVIP
+Icon: https://img.youdao.com/logo.png
