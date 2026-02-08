@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Filter</key>
+    <dict>
+        <!-- 方式1: 通过 Bundle ID 精确匹配 "有道云笔记" App -->
+        <key>Bundles</key>
+        <array>
+            <string>com.youdao.note.iphone</string>
+        </array>
+        <!-- 方式2 (可选): 如果不知道Bundle ID，可通过可执行文件名过滤 -->
+        <!--
+        <key>Executables</key>
+        <array>
+            <string>YoudaoNote</string>
+        </array>
+        -->
+    </dict>
+</dict>
+</plist>
