@@ -20,7 +20,14 @@ jobs:
           mkdir -p $HOME/theos/sdks
           cp -r $HOME/iOS-SDKs/iPhoneOS15.5.sdk $HOME/theos/sdks/
       
-      - name: Build Tweak
+      - name: Initialize Theos Vendor Directory
+        run: |
+          cd $HOME/theos
+          # 此命令会拉取构建所需的子模块（如libroot）
+          git submodule update --init --recursive
+          echo "✅ Theos vendor 目录初始化完成。"
+       
+       - name: Build Tweak
         run: |
           cd $GITHUB_WORKSPACE
           
