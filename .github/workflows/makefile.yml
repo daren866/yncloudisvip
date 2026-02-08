@@ -42,6 +42,16 @@ jobs:
                     echo "$HOME/theos/bin" >> $GITHUB_PATH
                     echo "✅ 已创建并配置 dm.pl 脚本。"
 
+      - name: Fix Theos Packaging Command Syntax
+        run: |
+          DEB_MK_FILE="$HOME/theos/makefiles/package/deb.mk"
+          echo "正在修复打包命令语法..."
+          # 备份原文件
+          cp "$DEB_MK_FILE" "$DEB_MK_FILE.backup"
+          # 使用sed进行精确修复：找到包含特定模式的行并替换
+          sed -i.bak 's/^\s*(COPYFILE_DISABLE=1.*$(FAKEROOT).*-b.*$/COPYFILE_DISABLE=1 $(FAKEROOT) -r dm.pl $(THEOS_PLATFORM_DPKG_DEB_COMPRESSION_FLAG) $(DPKGDEB_FLAGS) -b "$(_THEOS_PLATFORM_DPKG_DEB_BUILD_DPKG_FAKEROOT_PATH)" "$(THEOS_PACKAGE_DIR)\/$(PACKAGE_FILENAME)"/' "$DEB_MK_FILE"
+          echo "✅ 已尝试修复打包命令。"
+      
       # 步骤 3: 原来的编译和打包步骤
       - name: Build Tweak
         run: |
