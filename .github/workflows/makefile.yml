@@ -15,63 +15,49 @@ jobs:
         with:
           fetch-depth: 1
       
-      # 步骤0：调试信息前置（输出环境/网络/权限信息）
-      - name: Debug - Env & Network Info
+      # 步骤0：前置调试（输出Git/SSH核心信息）
+      - name: Debug - Git & SSH Config
         run: |
-          # 输出详细环境信息（用于排查）
-          echo "=== 系统信息 ==="
-          uname -a
-          sw_vers
-          echo "=== Git 版本 & 配置 ==="
-          git --version
+          set -x
+          # 输出SSH配置（关键：确认Runner有SSH密钥）
+          echo "=== SSH 配置检查 ==="
+          ssh -v git@github.com 2>&1 | grep -E "Authenticated|successfully" || echo "⚠️ SSH认证检查（仅看是否连通）"
+          # 输出Git凭证配置（彻底清空）
+          echo "=== Git 凭证配置 ==="
+          git config --global --unset-all credential.helper
+          git config --global --unset core.askpass
+          git config --global credential.helper "false" # 禁用所有凭证助手
+          git config --global core.askpass "/bin/false" # 禁用密码请求
           git config --list
-          echo "=== GitHub 上下文 ==="
-          echo "GITHUB_ACTOR: $GITHUB_ACTOR"
-          echo "GITHUB_TOKEN: ${GITHUB_TOKEN:0:10}..." # 脱敏输出前10位
-          echo "=== 网络测试 ==="
-          curl -v https://github.com > /dev/null 2>&1
-          echo "=== 目录权限 ==="
-          ls -la $HOME
-          mkdir -p $HOME/test && rm -rf $HOME/test
+          set +x
           echo "✅ 调试信息输出完成"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 注入默认token
       
-      # 步骤1：安装依赖（修复Git认证 + 详细日志）
-      - name: Install Dependencies (Ellekit + Theos)
+      # 步骤1：安装依赖（SSH克隆 + 彻底禁用凭证请求）
+      - name: Install Dependencies (SSH Clone + No Auth)
         run: |
-          # 关闭过度容错，让错误直接暴露（关键！）
+          # 严格模式：任何错误立即终止并输出
           set -euo pipefail
-          # 开启命令执行日志（每行命令都输出，便于定位哪步错）
           set -x
           
-          # 基础工具安装（带详细日志）
+          # 安装基础工具
           brew update --verbose
           brew install ldid dpkg --verbose
           
           # 清理旧环境
           rm -rf $HOME/theos $HOME/ellekit $HOME/iOS-SDKs
           
-          # ========== 修复Git认证问题核心 ==========
-          # 方案1：用GITHUB_TOKEN替代匿名HTTPS克隆（避免认证弹窗）
-          # 原理：GitHub Actions默认提供GITHUB_TOKEN，可免认证克隆公有仓库
-          export GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
-          git config --global url."https://${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
-          # 禁用Git交互式认证（避免弹出用户名密码输入）
-          git config --global core.askpass ""
-          git config --global credential.helper "store --file=/tmp/git-credential"
+          # ========== 核心修复：改用SSH克隆（无需认证）==========
+          # GitHub公有仓库SSH克隆格式：git@github.com:用户名/仓库名.git
+          echo "=== 克隆Theos（SSH方式）==="
+          git clone --depth=1 --single-branch --verbose git@github.com:theos/theos.git $HOME/theos
           
-          # 克隆仓库（加--verbose输出详细克隆日志）
-          echo "=== 克隆Theos（带认证）==="
-          git clone --depth=1 --single-branch --verbose https://github.com/theos/theos.git $HOME/theos
+          echo "=== 克隆Ellekit（SSH方式）==="
+          git clone --depth=1 --single-branch --verbose git@github.com:ellekit/ellekit.git $HOME/ellekit
           
-          echo "=== 克隆Ellekit（带认证）==="
-          git clone --depth=1 --single-branch --verbose https://github.com/ellekit/ellekit.git $HOME/ellekit
+          echo "=== 克隆iOS-SDKs（SSH方式）==="
+          git clone --depth=1 --verbose git@github.com:xybp888/iOS-SDKs.git $HOME/iOS-SDKs
           
-          echo "=== 克隆iOS-SDKs（带认证）==="
-          git clone --depth=1 --verbose https://github.com/xybp888/iOS-SDKs.git $HOME/iOS-SDKs
-          
-          # 恢复Theos目录结构
+          # 恢复目录结构
           mkdir -p $HOME/theos/sdks
           cp -r $HOME/iOS-SDKs/iPhoneOS14.4.sdk $HOME/theos/sdks/
           
@@ -80,17 +66,14 @@ jobs:
           cp -r $HOME/ellekit/include $HOME/theos/vendor/ellekit/
           cp -r $HOME/ellekit/lib $HOME/theos/vendor/ellekit/
           
-          # 初始化Theos依赖（带日志）
+          # 初始化Theos依赖
           cd $HOME/theos
           git submodule update --init --recursive --verbose src/objc
           
-          # 关闭调试日志
           set +x
-          echo "✅ Theos + Ellekit 安装完成（适配iPhone7无根越狱）。"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 注入token到环境变量
+          echo "✅ Theos + Ellekit 安装完成（SSH克隆，无认证）。"
       
-      # 步骤2：修复deb.mk（带错误捕获）
+      # 步骤2：修复deb.mk（带详细日志）
       - name: Fix deb.mk (Rootless + iPhone7)
         run: |
           set -euo pipefail
@@ -108,16 +91,16 @@ jobs:
           echo -e "_THEOS_PLATFORM_DPKG_DEB_COMPRESSION = gzip\nTHEOS_STAGING_DIR = /var/jb" >> "$DEB_MK_FILE"
           
           set +x
-          echo "✅ deb.mk 修复完成（Ellekit + Rootless + iPhone7）。"
+          echo "✅ deb.mk 修复完成。"
       
-      # 步骤3：编译打包（带全量错误日志）
+      # 步骤3：编译打包（全量日志）
       - name: Build with Theos (Ellekit + Rootless + iPhone7)
         run: |
           set -euo pipefail
           set -x
           cd $GITHUB_WORKSPACE
           rm -rf .theos packages
-          make clean 2>/dev/null || true # 仅clean容错，其他命令严格检查
+          make clean 2>/dev/null || true
           
           # 核心配置
           export THEOS=$HOME/theos
@@ -155,17 +138,17 @@ jobs:
           # 执行打包（V=2输出最详细日志）
           make package V=2
           
-          # 验证产物（严格检查，无包则直接失败）
+          # 严格验证产物
           ls -la packages/*.deb
-          if [ ! -f "packages/*.deb" ]; then
+          if [ $(ls -1 packages/*.deb 2>/dev/null | wc -l) -eq 0 ]; then
             echo "❌ 未生成deb包！"
             exit 1
           fi
           
           set +x
-          echo "✅ 编译完成！适配iPhone7无根越狱 + Ellekit。"
+          echo "✅ 编译完成！"
       
-      # 步骤4：上传产物（严格检查）
+      # 步骤4：上传产物
       - name: Upload Ellekit-Rootless DEB (iPhone7)
         uses: actions/upload-artifact@v4
         with:
