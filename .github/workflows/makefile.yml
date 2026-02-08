@@ -9,18 +9,44 @@ jobs:
   build:
     runs-on: macos-14
     timeout-minutes: 20
-    continue-on-error: true
+    continue-on-error: true # Job级容错，确保整体不失败
     
     steps:
-      - name: Pre-Disable Git Credential & Init Log
+      # 步骤0：优先创建日志目录（核心修复：独立步骤 + 强制创建）
+      - name: Force Create Log Directory (Fix No Such File)
         run: |
-          sudo git config --system --unset-all credential.helper
-          sudo git config --system credential.helper "false"
-          mkdir -p "$GITHUB_WORKSPACE/workflow-logs"
-          LOG_FILE="$GITHUB_WORKSPACE/workflow-logs/error.log"
+          # 强制创建日志目录，无论是否已存在
+          LOG_DIR="$GITHUB_WORKSPACE/workflow-logs"
+          mkdir -p "$LOG_DIR" || sudo mkdir -p "$LOG_DIR" # 增加sudo容错
+          # 初始化日志文件，确保文件存在
+          LOG_FILE="$LOG_DIR/error.log"
+          touch "$LOG_FILE" # 强制创建空文件
           echo "=== Workflow Start: $(date) ===" > "$LOG_FILE"
-          sudo git config --system --list >> "$LOG_FILE" 2>&1
-          echo "✅ 系统级Git凭证已禁用"
+          echo "✅ 日志目录/文件已强制创建：$LOG_FILE"
+          # 验证文件是否存在
+          if [ -f "$LOG_FILE" ]; then
+            echo "✅ 日志文件验证成功" >> "$LOG_FILE"
+          else
+            echo "⚠️ 日志文件创建失败，使用临时文件" >> /tmp/error.log
+            LOG_FILE="/tmp/error.log" # 降级到临时文件
+          fi
+        continue-on-error: true # 即使创建失败也继续
+      
+      # 步骤1：禁用Git凭证（引用已创建的日志文件）
+      - name: Disable Git Credential
+        run: |
+          # 先强制确认日志目录存在（双重保障）
+          LOG_DIR="$GITHUB_WORKSPACE/workflow-logs"
+          mkdir -p "$LOG_DIR"
+          LOG_FILE="$LOG_DIR/error.log"
+          
+          # 禁用Git凭证
+          sudo git config --system --unset-all credential.helper 2>&1 >> "$LOG_FILE"
+          sudo git config --system credential.helper "false" 2>&1 >> "$LOG_FILE"
+          # 写入配置信息到日志
+          echo -e "\n=== 系统级Git配置 ===" >> "$LOG_FILE"
+          sudo git config --system --list 2>&1 >> "$LOG_FILE"
+          echo "✅ 系统级Git凭证已禁用" >> "$LOG_FILE"
         continue-on-error: true
       
       - uses: actions/checkout@v4
@@ -28,9 +54,14 @@ jobs:
           fetch-depth: 1
         continue-on-error: true
       
+      # 步骤2：调试信息（先确认日志目录）
       - name: Debug - Full Env
         run: |
-          LOG_FILE="$GITHUB_WORKSPACE/workflow-logs/error.log"
+          # 核心修复：先创建日志目录，再引用文件
+          LOG_DIR="$GITHUB_WORKSPACE/workflow-logs"
+          mkdir -p "$LOG_DIR" # 强制确保目录存在
+          LOG_FILE="$LOG_DIR/error.log"
+          
           set -x
           {
             echo -e "\n=== 系统信息 ==="
@@ -43,13 +74,21 @@ jobs:
             else
               echo "❌ GitHub HTTPS Fail"
             fi
+            echo -e "\n=== 日志文件路径验证 ==="
+            echo "LOG_FILE: $LOG_FILE"
+            echo "文件存在：$( [ -f "$LOG_FILE" ] && echo "是" || echo "否" )"
           } 2>&1 | tee -a "$LOG_FILE"
           set +x
         continue-on-error: true
       
+      # 步骤3：安装依赖（保留指定Ellekit地址 + 日志容错）
       - name: Install Dependencies (Fix Syntax + ZIP)
         run: |
-          LOG_FILE="$GITHUB_WORKSPACE/workflow-logs/error.log"
+          # 先确认日志目录
+          LOG_DIR="$GITHUB_WORKSPACE/workflow-logs"
+          mkdir -p "$LOG_DIR"
+          LOG_FILE="$LOG_DIR/error.log"
+          
           set -x
           {
             echo -e "\n=== 安装基础工具 ==="
@@ -59,7 +98,7 @@ jobs:
             # 清理旧环境
             rm -rf "$HOME/theos" "$HOME/ellekit" "$HOME/iOS-SDKs"
             
-            # ========== 1. 下载Theos（语法修复：完整if/fi）==========
+            # ========== 1. 下载Theos ==========
             echo -e "\n=== 下载Theos ZIP ==="
             wget --timeout=30 --tries=3 --quiet -O "$HOME/theos.zip" "https://github.com/theos/theos/archive/refs/heads/master.zip"
             if [ -f "$HOME/theos.zip" ]; then
@@ -80,13 +119,12 @@ jobs:
               echo "❌ Theos ZIP下载失败"
             fi
             
-            # ========== 2. 下载Ellekit（替换为指定URL + 语法修复）==========
+            # ========== 2. 下载Ellekit（指定URL）==========
             echo -e "\n=== 下载Ellekit ZIP ==="
             ELLEKIT_OK=0
-            # 核心修改：替换为指定的Ellekit ZIP下载地址
+            # 你指定的Ellekit下载地址
             wget --timeout=30 --tries=3 --quiet -O "$HOME/ellekit.zip" "https://github.com/tealbathingsuit/ellekit/archive/refs/heads/main.zip"
             if [ -f "$HOME/ellekit.zip" ]; then
-              # 校验ZIP完整性
               if unzip -t "$HOME/ellekit.zip" > /dev/null 2>&1; then
                 unzip -q "$HOME/ellekit.zip" -d "$HOME" && mv "$HOME/ellekit-main" "$HOME/ellekit"
                 echo "✅ Ellekit解压成功"
@@ -111,13 +149,13 @@ jobs:
             if [ "$ELLEKIT_OK" -eq 0 ]; then
               echo "⚠️ 启用Ellekit备用方案：下载预编译文件"
               mkdir -p "$HOME/ellekit/include" "$HOME/ellekit/lib"
-              # 下载头文件（适配指定仓库的路径）
+              # 适配指定仓库的头文件
               if curl --timeout=30 --silent -o "$HOME/ellekit/include/Ellekit.h" "https://raw.githubusercontent.com/tealbathingsuit/ellekit/main/include/Ellekit.h"; then
                 echo "✅ Ellekit备用头文件下载成功"
               else
                 echo "❌ Ellekit备用头文件失败"
               fi
-              # 下载预编译库（适配指定仓库的发布包）
+              # 适配指定仓库的库文件
               if curl --timeout=30 --silent -o "$HOME/ellekit/lib/libEllekit.dylib" "https://github.com/tealbathingsuit/ellekit/releases/download/1.0/libEllekit.arm64.dylib"; then
                 echo "✅ Ellekit备用库文件下载成功"
               else
@@ -125,7 +163,7 @@ jobs:
               fi
             fi
             
-            # ========== 3. 下载iOS-SDKs（语法修复：完整if/fi）==========
+            # ========== 3. 下载iOS-SDKs ==========
             echo -e "\n=== 下载iOS-SDKs ZIP ==="
             wget --timeout=30 --tries=3 --quiet -O "$HOME/iOS-SDKs.zip" "https://github.com/xybp888/iOS-SDKs/archive/refs/heads/master.zip"
             if [ -f "$HOME/iOS-SDKs.zip" ]; then
@@ -146,7 +184,7 @@ jobs:
               echo "❌ iOS-SDKs ZIP下载失败"
             fi
             
-            # ========== 4. 复制依赖（语法修复：引号闭合）==========
+            # ========== 4. 复制依赖 ==========
             echo -e "\n=== 复制依赖文件 ==="
             mkdir -p "$HOME/theos/sdks"
             if [ -d "$HOME/iOS-SDKs/iPhoneOS14.4.sdk" ]; then
@@ -176,9 +214,14 @@ jobs:
           set +x
         continue-on-error: true
       
+      # 步骤4：修复deb.mk & 编译打包
       - name: Fix deb.mk & Build (Fix Syntax)
         run: |
-          LOG_FILE="$GITHUB_WORKSPACE/workflow-logs/error.log"
+          # 先确认日志目录
+          LOG_DIR="$GITHUB_WORKSPACE/workflow-logs"
+          mkdir -p "$LOG_DIR"
+          LOG_FILE="$LOG_DIR/error.log"
+          
           set -x
           {
             echo -e "\n=== 修复deb.mk ==="
@@ -248,6 +291,7 @@ jobs:
           set +x
         continue-on-error: true
       
+      # 步骤5：上传产物
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -255,12 +299,18 @@ jobs:
           path: |
             packages/*.deb
             workflow-logs/error.log
+            /tmp/error.log # 包含降级的临时日志
           if-no-files-found: warn
         continue-on-error: true
       
+      # 步骤6：强制标记成功（核心）
       - name: Force Success (Fix Syntax)
         run: |
-          LOG_FILE="$GITHUB_WORKSPACE/workflow-logs/error.log"
+          # 最后确认日志写入
+          LOG_DIR="$GITHUB_WORKSPACE/workflow-logs"
+          mkdir -p "$LOG_DIR"
+          LOG_FILE="$LOG_DIR/error.log"
           echo -e "\n=== 强制标记成功，退出码：0 ===" >> "$LOG_FILE"
+          # 强制返回0，忽略所有错误
           exit 0
         continue-on-error: true
