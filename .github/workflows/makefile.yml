@@ -93,6 +93,107 @@ jobs:
           echo "=== 开始最终构建 ==="
           make package -j$(sysctl -n hw.logicalcpu)  # 启用多线程编译加速
       
+            # 步骤 2.1: 稳健修复 Theos 打包规则
+      - name: Patch Theos for Rootless & XZ
+        run: |
+          DEB_MK="$HOME/theos/makefiles/package/deb.mk"
+          echo "正在应用稳健的综合补丁..."
+
+          # 创建补丁内容
+          cat > /tmp/patch_deb.mk << 'EOF'
+          --- a/deb.mk
+          +++ b/deb.mk
+          @@ -关键行附近@@
+           # 核心修复：重写内部打包命令，避免所有括号问题
+          -_THEOS_PLATFORM_DPKG_DEB_BUILD_DPKG = \\
+          -       (COPYFILE_DISABLE=1 $(FAKEROOT) -r dm.pl $(THEOS_PLATFORM_DPKG_DEB_COMPRESSION_FLAG)) \\
+          -               $(DPKGDEB_FLAGS) -b "$(_THEOS_PLATFORM_DPKG_DEB_BUILD_DPKG_FAKEROOT_PATH)" \\
+          -               "$(THEOS_PACKAGE_DIR)/$(PACKAGE_FILENAME)"
+          +# 重构命令：移除外层括号，确保参数顺序正确
+          +_THEOS_PLATFORM_DPKG_DEB_BUILD_DPKG = \
+          +       COPYFILE_DISABLE=1 $(FAKEROOT) -r dm.pl $(THEOS_PLATFORM_DPKG_DEB_COMPRESSION_FLAG) \
+          +       $(DPKGDEB_FLAGS) -b "$(_THEOS_PLATFORM_DPKG_DEB_BUILD_DPKG_FAKEROOT_PATH)" \
+          +       "$(THEOS_PACKAGE_DIR)/$(PACKAGE_FILENAME)"
+          
+           # 确保压缩格式为 xz （覆盖任何残留的 lzma 设置）
+          +_THEOS_PLATFORM_DPKG_DEB_COMPRESSION = xz
+          +THEOS_PLATFORM_DPKG_DEB_COMPRESSION_FLAG = -Zxz
+          EOF
+
+          # 应用补丁（如果失败则手动替换关键行）
+          if patch --forward --silent "$DEB_MK" /tmp/patch_deb.mk 2>/dev/null; then
+            echo "✅ 补丁应用成功。"
+          else
+            echo "补丁应用失败，执行手动替换..."
+            # 关键：直接使用sed重写整条命令定义
+            sed -i.bak '/_THEOS_PLATFORM_DPKG_DEB_BUILD_DPKG *=/,/"[^"]*"$/ {
+                s/^[[:space:]]*(COPYFILE_DISABLE=1/COPYFILE_DISABLE=1/;
+                s/)[[:space:]]*$(DPKGDEB_FLAGS)/ $(DPKGDEB_FLAGS)/;
+            }' "$DEB_MK"
+            # 强制插入xz定义
+            sed -i.bak2 '/_THEOS_PLATFORM_DPKG_DEB_COMPRESSION[[:space:]]*=/d' "$DEB_MK"
+            echo "_THEOS_PLATFORM_DPKG_DEB_COMPRESSION = xz" >> "$DEB_MK"
+            echo "_THEOS_PLATFORM_DPKG_DEB_COMPRESSION_TYPE = xz" >> "$DEB_MK"
+            echo "✅ 手动替换完成。"
+          fi
+          echo "修补后的关键行："
+          grep -A2 "_THEOS_PLATFORM_DPKG_DEB_BUILD_DPKG =" "$DEB_MK"
+
+      # 步骤 3: 编译打包 Tweak
+      - name: Build Tweak
+        run: |
+          cd $GITHUB_WORKSPACE
+          echo "=== 环境准备 ==="
+          # 强力清理
+          rm -rf .theos packages
+          # 设置环境（关键：覆盖所有可能的遗留设置）
+          export THEOS="$HOME/theos"
+          export THEOS_PACKAGE_SCHEME="rootless"
+          export THEOS_PACKAGE_COMPRESSION="xz"
+          export SDKROOT="$THEOS/sdks/iPhoneOS15.5.sdk"
+          export DEB_BUILD_COMPRESSOR="xz"
+          export DEB_BUILD_COMPRESSOR_TYPE="xz"
+          
+          echo "=== 验证Filter.plist ==="
+          # 确保关键文件存在（根据你的项目调整）
+          PLIST_NAME="YNCloudNoteVIP.plist"
+          if [ ! -f "$PLIST_NAME" ] && [ ! -f "Filter.plist" ]; then
+              echo "创建默认Filter.plist..."
+              cat > "$PLIST_NAME" << 'PLIST_EOF'
+                <?xml version="1.0" encoding="UTF-8"?>
+                <!DOCTYPE plist>
+                <plist version="1.0">
+                <dict>
+                    <key>Filter</key>
+                    <dict>
+                        <key>Bundles</key>
+                        <array>
+                            <string>com.youdao.note.iphone</string>
+                        </array>
+                    </dict>
+                </dict>
+                </plist>
+                PLIST_EOF
+                        else
+                            echo "找到Filter.plist文件。"
+                        fi
+                        
+                        echo "=== 开始构建 ==="
+                        # 先编译（测试）
+                        make
+                        # 再打包（使用单线程避免并行问题）
+                        make package
+                        
+                        echo "=== 检查产物 ==="
+                        if ls packages/*.deb >/dev/null 2>&1; then
+                            echo "✅ 构建成功！生成的文件："
+                            ls -lh packages/*.deb
+                        else
+                            echo "❌ 未找到deb包。构建日志摘要："
+                            tail -50 .theos/build.log 2>/dev/null || echo "无构建日志。"
+                            exit 1
+                        fi
+      
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
