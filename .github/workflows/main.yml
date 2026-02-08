@@ -1,0 +1,88 @@
+# 工作流名称
+name: Build YoudaoNote VIP Tweak (iOS15 Rootless)
+
+# 触发条件：push代码到main分支、手动触发
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'Makefile'
+      - 'Tweak.x'
+      - 'control'
+      - '.github/workflows/build-tweak.yml'
+  workflow_dispatch: # 允许手动触发
+
+# 作业配置
+jobs:
+  build:
+    # 指定运行环境：macOS 14（必须用macOS，iOS Tweak编译依赖Xcode）
+    runs-on: macos-14
+    
+    # 步骤定义
+    steps:
+      # 步骤1：检出仓库代码
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # 步骤2：安装Homebrew依赖（必要的编译工具）
+      - name: Install Homebrew Dependencies
+        run: |
+          brew install ldid xz curl git make
+          brew upgrade ldid || true # 确保ldid是最新版（签名用）
+
+      # 步骤3：安装Theos（越狱开发核心工具）
+      - name: Install Theos
+        run: |
+          # 创建Theos目录
+          mkdir -p $HOME/theos
+          # 克隆Theos源码
+          git clone --depth=1 https://github.com/theos/theos.git $HOME/theos
+          # 设置Theos环境变量（全局生效）
+          echo "THEOS=$HOME/theos" >> $GITHUB_ENV
+          echo "PATH=$HOME/theos/bin:$PATH" >> $GITHUB_ENV
+
+      # 步骤4：安装iOS 15 SDK（编译iOS15 Tweak必需）
+      - name: Install iOS 15 SDK
+        run: |
+          # 克隆iOS SDK安装脚本
+          git clone --depth=1 https://github.com/tihmstar/ios-sdk-installer.git $HOME/ios-sdk-installer
+          # 安装iOS 15.0 SDK到Theos目录
+          cd $HOME/ios-sdk-installer
+          ./ios-sdk-installer.sh 15.0 $HOME/theos/sdks
+          # 验证SDK是否安装成功
+          ls -la $HOME/theos/sdks/ | grep iPhoneOS15.0.sdk
+
+      # 步骤5：配置编译环境变量
+      - name: Configure Build Env
+        run: |
+          # 设置SDK路径
+          echo "SDKROOT=$HOME/theos/sdks/iPhoneOS15.0.sdk" >> $GITHUB_ENV
+          # 设置架构（适配arm64/arm64e）
+          echo "ARCHS=arm64 arm64e" >> $GITHUB_ENV
+          # 设置目标iOS版本
+          echo "TARGET=iphone:clang:15.0:15.0" >> $GITHUB_ENV
+
+      # 步骤6：编译Tweak项目生成deb包
+      - name: Build Tweak
+        run: |
+          # 进入工程目录（GitHub Actions默认在仓库根目录）
+          cd $GITHUB_WORKSPACE
+          # 清理旧编译产物
+          make clean
+          # 编译并打包deb
+          make package THEOS=$HOME/theos SDKROOT=$HOME/theos/sdks/iPhoneOS15.0.sdk
+
+      # 步骤7：上传编译后的deb包（作为Artifact，可下载）
+      - name: Upload Deb Package
+        uses: actions/upload-artifact@v4
+        with:
+          # Artifact名称（便于识别）
+          name: YNCloudNoteVIP-iOS15-Rootless
+          # deb包路径（Theos编译后默认在packages目录）
+          path: |
+            $GITHUB_WORKSPACE/packages/*.deb
+            $GITHUB_WORKSPACE/README.md
+          # 保留90天
+          retention-days: 90
