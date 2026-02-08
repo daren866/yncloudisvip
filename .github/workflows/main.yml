@@ -60,40 +60,25 @@ jobs:
             exit 1
           fi
 
-      - name: Configure Build Env
-        run: |
-          echo "SDKROOT=$HOME/theos/sdks/iPhoneOS15.5.sdk" >> $GITHUB_ENV
-          echo "THEOS_PACKAGE_SCHEME=rootless" >> $GITHUB_ENV
-
-      - name: Check and Fix Makefile
+      - name: Build Tweak (Simplified)
         run: |
           cd $GITHUB_WORKSPACE
-          echo "检查 Makefile 内容..."
-          cat Makefile
           
-          # 检查是否已经包含 THEOS_PACKAGE_TOOL 设置
+          # 使用更简单的方法：直接修改Makefile内容
+          echo "正在准备Makefile..."
+          
+          # 如果Makefile中已经包含dpkg-deb设置，就不用修改
           if ! grep -q "THEOS_PACKAGE_TOOL" Makefile; then
-            echo "在 Makefile 中添加 THEOS_PACKAGE_TOOL 设置..."
-            sed -i '' '/THEOS_PACKAGE_SCHEME = rootless/a\
-THEOS_PACKAGE_TOOL = dpkg-deb' Makefile
+            echo "添加THEOS_PACKAGE_TOOL设置到Makefile..."
+            cp Makefile Makefile.backup
+            # 在THEOS_PACKAGE_SCHEME行后添加THEOS_PACKAGE_TOOL
+            awk '/THEOS_PACKAGE_SCHEME = rootless/ {print $0; print "THEOS_PACKAGE_TOOL = dpkg-deb"; next} 1' Makefile.backup > Makefile
           fi
           
-          echo "修正后的 Makefile 内容:"
-          cat Makefile
-
-      - name: Build Tweak
-        run: |
-          cd $GITHUB_WORKSPACE
-          echo "===== 验证Theos核心规则文件 ====="
-          ls -la $HOME/theos/makefiles/common.mk
-          echo "===== 验证Makefile ====="
+          echo "Makefile内容:"
           cat Makefile
           
-          # 设置环境变量
-          export THEOS=$HOME/theos
-          export SDKROOT=$HOME/theos/sdks/iPhoneOS15.5.sdk
-          
-          # 清理+编译+打包
+          echo "===== 开始构建 ====="
           make clean THEOS=$HOME/theos
           make package THEOS=$HOME/theos THEOS_PACKAGE_SCHEME=rootless
 
