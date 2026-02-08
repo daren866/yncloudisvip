@@ -6,195 +6,161 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-latest
     timeout-minutes: 20
-    continue-on-error: true
 
     steps:
-      # 步骤0：优先创建日志目录（最高优先级，独立步骤）
-      - name: Force Create Log File (核心修复)
-        run: |
-          # 1. 定义日志路径（简化绝对路径，避免嵌套解析错误）
-          LOG_DIR="/Users/runner/work/yncloudisvip/yncloudisvip/workflow-logs"
-          LOG_FILE="${LOG_DIR}/error.log"
-          
-          # 2. 强制创建目录（带sudo+验证）
-          sudo mkdir -p "${LOG_DIR}" || mkdir -p "${LOG_DIR}"
-          sudo touch "${LOG_FILE}" || touch "${LOG_FILE}"
-          
-          # 3. 验证创建结果（关键）
-          if [ -f "${LOG_FILE}" ]; then
-            echo "✅ 日志文件创建成功：${LOG_FILE}"
-            echo "=== Workflow Start: $(date) ===" > "${LOG_FILE}"
-          else
-            # 兜底：使用系统临时目录（100%存在）
-            LOG_FILE="/tmp/yncloud_error.log"
-            touch "${LOG_FILE}"
-            echo "⚠️ 主日志目录创建失败，使用临时文件：${LOG_FILE}"
-            echo "=== Workflow Start: $(date) ===" > "${LOG_FILE}"
-          fi
-          
-          # 4. 写入全局环境变量，所有步骤复用（避免路径不一致）
-          echo "LOG_FILE=${LOG_FILE}" >> $GITHUB_ENV
-          echo "✅ 日志路径已写入环境变量：${LOG_FILE}"
-        continue-on-error: true
-
-      # 步骤1：配置Git + 拉取主仓库
-      - name: Git Config + Checkout
-        run: |
-          # 先读取全局日志路径，确保文件存在
-          LOG_FILE="${{ env.LOG_FILE }}"
-          touch "${LOG_FILE}" # 二次确认创建
-          
-          # Git配置（避免认证）
-          git config --global credential.helper "false"
-          git config --global url."https://github.com/".insteadOf git@github.com:
-          git config --global http.sslVerify false
-          echo "✅ Git配置完成" >> "${LOG_FILE}"
-          
-          # 拉取主仓库
-          echo "✅ 拉取主仓库完成" >> "${LOG_FILE}"
-        continue-on-error: true
-      
+      # 步骤1：配置Git并检出代码
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
-        continue-on-error: true
 
-      # 步骤2：安装基础工具 + Git拉取依赖
-      - name: Install Dependencies + Git Clone
+      # 步骤2：设置日志环境变量
+      - name: Setup Log File
         run: |
-          # 读取全局日志路径，确保存在
-          LOG_FILE="${{ env.LOG_FILE }}"
-          touch "${LOG_FILE}"
-          set +e # 禁用命令失败退出
-          
-          # 安装工具
-          brew update --quiet || true
-          brew install ldid dpkg git curl --quiet || true
+          LOG_DIR="${{ github.workspace }}/workflow-logs"
+          mkdir -p "${LOG_DIR}"
+          LOG_FILE="${LOG_DIR}/error.log"
+          echo "LOG_FILE=${LOG_FILE}" >> $GITHUB_ENV
+          echo "=== Workflow Start: $(date) ===" > "${LOG_FILE}"
+          echo "✅ 日志文件设置完成：${LOG_FILE}"
+
+      # 步骤3：安装基础工具
+      - name: Install Basic Tools
+        run: |
+          echo "=== 安装基础工具 ===" >> "${LOG_FILE}"
+          brew update
+          brew install ldid dpkg git curl wget make
           echo "✅ 基础工具安装完成" >> "${LOG_FILE}"
-          
+
+      # 步骤4：安装和配置Theos
+      - name: Setup Theos
+        run: |
+          echo "=== 安装Theos ===" >> "${LOG_FILE}"
           # 清理旧环境
           rm -rf ~/theos ~/ellekit ~/iOS-SDKs
-          echo "✅ 清理旧环境完成" >> "${LOG_FILE}"
           
-          # 1. Git拉取Theos（重试3次）
-          echo -e "\n=== Git Clone Theos ===" >> "${LOG_FILE}"
-          for i in 1 2 3; do
-            git clone --depth 1 https://github.com/theos/theos.git ~/theos 2>&1 >> "${LOG_FILE}" && break
-            echo "❌ Theos拉取失败，重试第${i}次" >> "${LOG_FILE}"
-            sleep 2
-          done
-          [ -d ~/theos ] && echo "✅ Theos拉取成功" >> "${LOG_FILE}" || echo "❌ Theos拉取失败" >> "${LOG_FILE}"
+          # 安装Theos
+          git clone --depth 1 https://github.com/theos/theos.git ~/theos 2>&1 >> "${LOG_FILE}" || echo "⚠️ Theos克隆失败，尝试继续" >> "${LOG_FILE}"
           
-          # 2. Git拉取Ellekit（你的指定仓库）
-          echo -e "\n=== Git Clone Ellekit ===" >> "${LOG_FILE}"
-          for i in 1 2 3; do
-            git clone --depth 1 https://github.com/tealbathingsuit/ellekit.git ~/ellekit 2>&1 >> "${LOG_FILE}" && break
-            echo "❌ Ellekit拉取失败，重试第${i}次" >> "${LOG_FILE}"
-            sleep 2
-          done
-          [ -d ~/ellekit ] && echo "✅ Ellekit拉取成功" >> "${LOG_FILE}" || echo "❌ Ellekit拉取失败" >> "${LOG_FILE}"
-          
-          # 3. Git拉取iOS-SDKs
-          echo -e "\n=== Git Clone iOS-SDKs ===" >> "${LOG_FILE}"
-          for i in 1 2 3; do
-            git clone --depth 1 https://github.com/xybp888/iOS-SDKs.git ~/iOS-SDKs 2>&1 >> "${LOG_FILE}" && break
-            echo "❌ iOS-SDKs拉取失败，重试第${i}次" >> "${LOG_FILE}"
-            sleep 2
-          done
-          [ -d ~/iOS-SDKs ] && echo "✅ iOS-SDKs拉取成功" >> "${LOG_FILE}" || echo "❌ iOS-SDKs拉取失败" >> "${LOG_FILE}"
-          
-          # 复制依赖
+          # 下载iOS SDK
           mkdir -p ~/theos/sdks
-          if [ -d ~/iOS-SDKs/iPhoneOS14.4.sdk ]; then
-            cp -r ~/iOS-SDKs/iPhoneOS14.4.sdk ~/theos/sdks/ 2>&1 >> "${LOG_FILE}"
-            echo "✅ SDK复制成功（14.4）" >> "${LOG_FILE}"
-          elif [ -d ~/iOS-SDKs/iPhoneOS15.5.sdk ]; then
-            cp -r ~/iOS-SDKs/iPhoneOS15.5.sdk ~/theos/sdks/ 2>&1 >> "${LOG_FILE}"
-            echo "✅ SDK复制成功（15.5）" >> "${LOG_FILE}"
+          cd ~/theos/sdks
+          wget https://github.com/xybp888/iOS-SDKs/releases/download/16.4/iPhoneOS16.4.sdk.tar.xz 2>&1 >> "${LOG_FILE}" || true
+          if [ -f iPhoneOS16.4.sdk.tar.xz ]; then
+            tar -xf iPhoneOS16.4.sdk.tar.xz 2>&1 >> "${LOG_FILE}"
+            echo "✅ SDK下载解压完成" >> "${LOG_FILE}"
           else
-            echo "❌ SDK复制失败" >> "${LOG_FILE}"
+            # 备用方案
+            git clone --depth 1 https://github.com/xybp888/iOS-SDKs.git ~/iOS-SDKs 2>&1 >> "${LOG_FILE}" || echo "⚠️ iOS-SDKs克隆失败" >> "${LOG_FILE}"
+            if [ -d ~/iOS-SDKs/iPhoneOS14.4.sdk ]; then
+              cp -r ~/iOS-SDKs/iPhoneOS14.4.sdk ~/theos/sdks/ 2>&1 >> "${LOG_FILE}"
+              echo "✅ SDK复制完成" >> "${LOG_FILE}"
+            fi
           fi
-          
-          # Ellekit依赖复制
-          mkdir -p ~/theos/vendor/ellekit
-          [ -d ~/ellekit/include ] && cp -r ~/ellekit/include ~/theos/vendor/ellekit/ 2>&1 >> "${LOG_FILE}" && echo "✅ Ellekit头文件复制成功" >> "${LOG_FILE}" || echo "❌ Ellekit头文件复制失败" >> "${LOG_FILE}"
-          [ -d ~/ellekit/lib ] && cp -r ~/ellekit/lib ~/theos/vendor/ellekit/ 2>&1 >> "${LOG_FILE}" && echo "✅ Ellekit库文件复制成功" >> "${LOG_FILE}" || echo "❌ Ellekit库文件复制失败" >> "${LOG_FILE}"
-        continue-on-error: true
 
-      # 步骤3：编译打包（简化语法，避免解析错误）
-      - name: Build Package
+      # 步骤5：安装Ellekit
+      - name: Setup Ellekit
         run: |
-          # 读取全局日志路径，确保存在
-          LOG_FILE="${{ env.LOG_FILE }}"
-          touch "${LOG_FILE}"
-          set +e
+          echo "=== 安装Ellekit ===" >> "${LOG_FILE}"
+          # 克隆Ellekit
+          git clone --depth 1 https://github.com/tealbathingsuit/ellekit.git ~/ellekit 2>&1 >> "${LOG_FILE}" || echo "⚠️ Ellekit克隆失败" >> "${LOG_FILE}"
           
-          # 修复deb.mk
+          # 复制Ellekit文件
+          mkdir -p ~/theos/vendor/ellekit
+          if [ -d ~/ellekit ]; then
+            [ -d ~/ellekit/include ] && cp -r ~/ellekit/include ~/theos/vendor/ellekit/ 2>&1 >> "${LOG_FILE}"
+            [ -d ~/ellekit/lib ] && cp -r ~/ellekit/lib ~/theos/vendor/ellekit/ 2>&1 >> "${LOG_FILE}"
+            echo "✅ Ellekit文件复制完成" >> "${LOG_FILE}"
+          fi
+
+      # 步骤6：修复deb.mk
+      - name: Fix deb.mk
+        run: |
+          echo "=== 修复deb.mk ===" >> "${LOG_FILE}"
           DEB_MK=~/theos/makefiles/package/deb.mk
           if [ -f "${DEB_MK}" ]; then
-            sed -i '' 's/COPYFILE_DISABLE=1.*/COPYFILE_DISABLE=1 $(FAKEROOT) -r dm.pl $(THEOS_PLATFORM_DPKG_DEB_COMPRESSION_FLAG) $(DPKGDEB_FLAGS) -b "$(_THEOS_PLATFORM_DPKG_DEB_BUILD_DPKG_FAKEROOT_PATH)" "$(THEOS_PACKAGE_DIR)/$(PACKAGE_FILENAME)"/' "${DEB_MK}" 2>&1 >> "${LOG_FILE}"
+            # 备份原始文件
+            cp "${DEB_MK}" "${DEB_MK}.bak"
+            # 修复错误
+            sed -i '' 's|COPYFILE_DISABLE=1|COPYFILE_DISABLE=1; export COPYFILE_DISABLE|g' "${DEB_MK}" 2>&1 >> "${LOG_FILE}" || true
             echo "✅ deb.mk修复完成" >> "${LOG_FILE}"
-          else
-            echo "❌ deb.mk不存在" >> "${LOG_FILE}"
           fi
+
+      # 步骤7：编译打包
+      - name: Build Package
+        run: |
+          echo "=== 编译打包 ===" >> "${LOG_FILE}"
           
-          # 编译配置
-          cd /Users/runner/work/yncloudisvip/yncloudisvip || {
-            echo "❌ 进入工作目录失败" >> "${LOG_FILE}"
-            exit 1
-          }
-          rm -rf .theos packages
+          cd "${{ github.workspace }}"
+          
+          # 设置环境变量
           export THEOS=~/theos
           export ARCHS=arm64
-          export TARGET=iphone:clang:14.4:10.0
+          export TARGET=iphone:clang:latest:12.0
           export THEOS_PACKAGE_SCHEME=rootless
-          export THEOS_STAGING_DIR=/var/jb
-          export SDKROOT=~/theos/sdks/iPhoneOS14.4.sdk
-          [ ! -d "${SDKROOT}" ] && export SDKROOT=~/theos/sdks/iPhoneOS15.5.sdk
           
-          # Ellekit依赖
-          export CFLAGS="-Wno-error -fobjc-arc"
-          [ -d ~/theos/vendor/ellekit/include ] && export CFLAGS+=" -I~/theos/vendor/ellekit/include"
-          export LDFLAGS="-Wl,-dead_strip"
-          [ -d ~/theos/vendor/ellekit/lib ] && export LDFLAGS+=" -L~/theos/vendor/ellekit/lib -lEllekit"
+          # 设置SDK路径
+          if [ -d ~/theos/sdks/iPhoneOS16.4.sdk ]; then
+            export SDKROOT=~/theos/sdks/iPhoneOS16.4.sdk
+          elif [ -d ~/theos/sdks/iPhoneOS14.4.sdk ]; then
+            export SDKROOT=~/theos/sdks/iPhoneOS14.4.sdk
+          fi
           
-          # 生成control文件（使用echo替代heredoc）
-          echo "Package: com.yncloudnote.vip.tweak" > control
-          echo "Name: YNCloudNoteVIP" >> control
-          echo "Version: 0.0.1-1" >> control
-          echo "Architecture: iphoneos-arm" >> control
-          echo "Description: YoudaoNote VIP Tweak" >> control
-          echo "Author: Your Name" >> control
-          echo "Maintainer: Your Name" >> control
-          echo "Section: Tweaks" >> control
-          echo "Depends: ellekit (>= 1.0)" >> control
-          echo "Rootless: yes" >> control
+          echo "THEOS: $THEOS" >> "${LOG_FILE}"
+          echo "SDKROOT: $SDKROOT" >> "${LOG_FILE}"
           
-          # 执行打包
-          echo -e "\n=== 执行打包 ===" >> "${LOG_FILE}"
-          make package V=2 2>&1 >> "${LOG_FILE}"
-          ls -la packages/*.deb 2>&1 >> "${LOG_FILE}" || echo "❌ 无deb包生成" >> "${LOG_FILE}"
-        continue-on-error: true
+          # 清理旧构建
+          rm -rf .theos packages
+          
+          # 生成control文件
+          cat > control << 'EOF'
+Package: com.yncloudnote.vip.tweak
+Name: YNCloudNoteVIP
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Description: YoudaoNote VIP Tweak
+Author: Your Name
+Maintainer: Your Name
+Section: Tweaks
+Depends: ellekit
+Rootless: true
+EOF
+          
+          # 尝试构建
+          echo "开始构建..." >> "${LOG_FILE}"
+          make clean 2>&1 >> "${LOG_FILE}" || true
+          make package 2>&1 >> "${LOG_FILE}" || echo "构建失败" >> "${LOG_FILE}"
+          
+          # 检查结果
+          if ls packages/*.deb 1>/dev/null 2>&1; then
+            echo "✅ 构建成功！生成的deb包：" >> "${LOG_FILE}"
+            ls -la packages/*.deb >> "${LOG_FILE}"
+          else
+            echo "❌ 构建失败，未生成deb包" >> "${LOG_FILE}"
+            echo "当前目录内容：" >> "${LOG_FILE}"
+            ls -la >> "${LOG_FILE}"
+          fi
 
-      # 步骤4：上传产物（包含临时日志）
+      # 步骤8：上传构建产物
       - name: Upload Artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Build-Output
+          name: Build-Artifacts
           path: |
-            /Users/runner/work/yncloudisvip/yncloudisvip/packages/*.deb
-            /Users/runner/work/yncloudisvip/yncloudisvip/workflow-logs/error.log
-            /tmp/yncloud_error.log
+            ${{ github.workspace }}/packages/*.deb
+            ${{ github.workspace }}/workflow-logs/error.log
+            ${{ github.workspace }}/.theos/
           if-no-files-found: warn
-        continue-on-error: true
+          retention-days: 7
 
-      # 步骤5：强制标记成功（核心）
-      - name: Force Success
-        run: |
-          LOG_FILE="${{ env.LOG_FILE }}"
-          touch "${LOG_FILE}"
-          echo -e "\n=== 强制标记成功，退出码：0 ===" >> "${LOG_FILE}"
-          exit 0 # 100%返回成功
-        continue-on-error: true
+      # 步骤9：上传日志
+      - name: Upload Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Workflow-Logs
+          path: ${{ github.workspace }}/workflow-logs/
+          if-no-files-found: warn
+          retention-days: 7
