@@ -29,7 +29,7 @@ jobs:
       # 步骤2：安装Homebrew依赖（必要的编译工具）
       - name: Install Homebrew Dependencies
         run: |
-          brew install ldid xz curl git make
+          brew install ldid xz curl git make unzip
           brew upgrade ldid || true # 确保ldid是最新版（签名用）
 
       # 步骤3：安装Theos（越狱开发核心工具）
@@ -37,22 +37,33 @@ jobs:
         run: |
           # 创建Theos目录
           mkdir -p $HOME/theos
-          # 克隆Theos源码
+          # 克隆Theos源码（改用SSH方式，更稳定）
+          git clone --depth=1 git@github.com:theos/theos.git $HOME/theos || \
+          # 备用：HTTPS方式克隆Theos
           git clone --depth=1 https://github.com/theos/theos.git $HOME/theos
           # 设置Theos环境变量（全局生效）
           echo "THEOS=$HOME/theos" >> $GITHUB_ENV
           echo "PATH=$HOME/theos/bin:$PATH" >> $GITHUB_ENV
 
-      # 步骤4：安装iOS 15 SDK（编译iOS15 Tweak必需）
+      # 步骤4：安装iOS 15 SDK（替换为直接下载预编译包，避免克隆出错）
       - name: Install iOS 15 SDK
         run: |
-          # 克隆iOS SDK安装脚本
-          git clone --depth=1 https://github.com/tihmstar/ios-sdk-installer.git $HOME/ios-sdk-installer
-          # 安装iOS 15.0 SDK到Theos目录
-          cd $HOME/ios-sdk-installer
-          ./ios-sdk-installer.sh 15.0 $HOME/theos/sdks
+          # 创建SDK目录
+          mkdir -p $HOME/theos/sdks
+          cd $HOME/theos/sdks
+          # 下载iOS 15.0 SDK预编译包（稳定源）
+          curl -L -o iPhoneOS15.0.sdk.zip https://github.com/luoxiu/iOS-SDKs/raw/master/iPhoneOS15.0.sdk.zip
+          # 解压SDK包
+          unzip -q iPhoneOS15.0.sdk.zip -d .
+          # 删除压缩包，节省空间
+          rm -f iPhoneOS15.0.sdk.zip
           # 验证SDK是否安装成功
-          ls -la $HOME/theos/sdks/ | grep iPhoneOS15.0.sdk
+          if [ -d "iPhoneOS15.0.sdk" ]; then
+            echo "iOS 15.0 SDK安装成功"
+          else
+            echo "iOS 15.0 SDK安装失败"
+            exit 1
+          fi
 
       # 步骤5：配置编译环境变量
       - name: Configure Build Env
@@ -71,8 +82,8 @@ jobs:
           cd $GITHUB_WORKSPACE
           # 清理旧编译产物
           make clean
-          # 编译并打包deb
-          make package THEOS=$HOME/theos SDKROOT=$HOME/theos/sdks/iPhoneOS15.0.sdk
+          # 编译并打包deb（显式指定Theos和SDK路径，避免环境变量问题）
+          make package THEOS=$HOME/theos SDKROOT=$HOME/theos/sdks/iPhoneOS15.0.sdk THEOS_PACKAGE_SCHEME=rootless
 
       # 步骤7：上传编译后的deb包（作为Artifact，可下载）
       - name: Upload Deb Package
