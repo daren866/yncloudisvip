@@ -15,13 +15,17 @@ INSTALL_TARGET_PROCESSES = YoudaoNote
 
 # ===================== 编译参数 =====================
 # 源文件
-$(TWEAK_NAME)_FILES = Tweak.x
+YNCloudNoteVIP_FILES = Tweak.x
 # 编译标记（ARC模式+关闭无用警告）
-$(TWEAK_NAME)_CFLAGS = -fobjc-arc -Wno-error=deprecated-declarations -Wno-unused-variable
+YNCloudNoteVIP_CFLAGS = -fobjc-arc -Wno-error=deprecated-declarations -Wno-unused-variable
 # 依赖的系统框架
-$(TWEAK_NAME)_FRAMEWORKS = Foundation UIKit
+YNCloudNoteVIP_FRAMEWORKS = Foundation UIKit
 # 依赖的LibHooker库（无根越狱必需）
-$(TWEAK_NAME)_LIBRARIES = hooker
+YNCloudNoteVIP_LIBRARIES = hooker
 
 # 第二步：引入Tweak专属打包规则（必须最后一行）
 include $(THEOS_MAKE_PATH)/tweak.mk
+
+# 可选：清理后执行安装（如果需要）
+after-install::
+	install.exec "killall -9 YoudaoNote || true"
