@@ -55,6 +55,7 @@ jobs:
           # 拉取主仓库
           echo "✅ 拉取主仓库完成" >> "${LOG_FILE}"
         continue-on-error: true
+      
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
@@ -124,7 +125,6 @@ jobs:
 
       # 步骤3：编译打包（简化语法，避免解析错误）
       - name: Build Package
-        shell: /bin/bash
         run: |
           # 读取全局日志路径，确保存在
           LOG_FILE="${{ env.LOG_FILE }}"
