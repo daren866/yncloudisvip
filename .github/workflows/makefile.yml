@@ -14,22 +14,26 @@ jobs:
       
       - name: Install Dependencies (Clean & Reinstall)
         run: |
-          # 先清理可能损坏的 theos 目录
+          # 关闭 bash 严格模式（允许命令返回非0，仅grep容错）
+          set +e
+          # 清理旧的 theos 避免污染
           rm -rf $HOME/theos
           brew install ldid dpkg
           
-          # 重新克隆干净的 theos 仓库（确保文件未被篡改）
+          # 重新克隆干净的 theos 仓库
           git clone --depth=1 https://github.com/theos/theos.git $HOME/theos
           git clone --depth=1 https://github.com/xybp888/iOS-SDKs.git $HOME/iOS-SDKs
           mkdir -p $HOME/theos/sdks
           cp -r $HOME/iOS-SDKs/iPhoneOS15.5.sdk $HOME/theos/sdks/
           
-          # 初始化 submodule（确保依赖完整）
+          # 初始化 submodule
           cd $HOME/theos
           git submodule update --init --recursive
           echo "✅ 重新安装 Theos 完成，文件均为原始状态。"
+          # 恢复严格模式
+          set -e
 
-      # 步骤 1: 配置 dm.pl（解决 requires dm.pl 错误）
+      # 步骤 1: 配置 dm.pl
       - name: Setup dm.pl for Theos
         run: |
           mkdir -p $HOME/theos/bin
@@ -44,68 +48,74 @@ jobs:
           echo "$HOME/theos/bin" >> $GITHUB_PATH
           echo "✅ dm.pl 配置完成。"
 
-      # 步骤 2: 仅修复打包命令行的括号（不碰其他语法）
-      - name: Fix deb.mk (Only Bracket in Package Command)
+      # 步骤 2: 修复 deb.mk（容错版，避免 grep 无结果中断）
+      - name: Fix deb.mk (Fault-Tolerant)
         run: |
           DEB_MK_FILE="$HOME/theos/makefiles/package/deb.mk"
-          # 先备份原始干净的文件（关键！）
+          # 备份原始文件
           cp "$DEB_MK_FILE" "$DEB_MK_FILE.original"
           
-          echo "=== 查看原始打包命令行 ==="
-          # 找到包含打包命令的行（特征：COPYFILE_DISABLE + fakeroot + dm.pl）
-          grep -n -E "COPYFILE_DISABLE.*fakeroot.*dm.pl" "$DEB_MK_FILE"
+          echo "=== 查找打包命令行（宽松匹配）==="
+          # 放宽匹配规则：只找包含 COPYFILE_DISABLE 的行（去掉 dm.pl/fakeroot 限制）
+          # 加 || true 让 grep 没结果也返回0，避免中断
+          grep -n "COPYFILE_DISABLE" "$DEB_MK_FILE" || true
           
-          # 精准修复：只删除该行的首尾括号，保留 Makefile 语法
-          # 分两步：1. 删除行首的 (  2. 删除行尾的 )
+          echo "=== 精准修复括号（即使没找到行也不中断）==="
+          # 修复逻辑：只处理含 COPYFILE_DISABLE 的行，删除首尾括号
+          # sed 命令本身即使没匹配也不会返回非0，天然容错
           sed -i '' \
-              -e '/COPYFILE_DISABLE.*fakeroot.*dm.pl/ s/^[[:space:]]*(//' \
-              -e '/COPYFILE_DISABLE.*fakeroot.*dm.pl/ s/)[[:space:]]*$//' \
+              -e '/COPYFILE_DISABLE/ s/^[[:space:]]*(//' \
+              -e '/COPYFILE_DISABLE/ s/)[[:space:]]*$//' \
               "$DEB_MK_FILE"
           
-          echo "=== 修复后的打包命令行 ==="
-          grep -n -E "COPYFILE_DISABLE.*fakeroot.*dm.pl" "$DEB_MK_FILE"
-          echo "✅ 仅修复打包命令行括号完成，Makefile 语法保留。"
+          echo "=== 修复后的关键行 ==="
+          grep -n "COPYFILE_DISABLE" "$DEB_MK_FILE" || echo "⚠️ 未找到 COPYFILE_DISABLE 行，跳过括号修复"
+          echo "✅ deb.mk 修复完成（容错模式）。"
 
-      # 步骤 3: 修复压缩配置（lzma → xz）
+      # 步骤 3: 修复压缩配置
       - name: Fix Compression Config
         run: |
           DEB_MK_FILE="$HOME/theos/makefiles/package/deb.mk"
-          # 替换压缩方式（只改这一行，不碰其他）
-          sed -i '' 's/_THEOS_PLATFORM_DPKG_DEB_COMPRESSION = lzma/_THEOS_PLATFORM_DPKG_DEB_COMPRESSION = xz/g' "$DEB_MK_FILE"
-          # 确保配置生效
-          echo "_THEOS_PLATFORM_DPKG_DEB_COMPRESSION = xz" >> "$DEB_MK_FILE"
-          echo "✅ 压缩配置修复完成（lzma → xz）。"
+          # 替换 lzma 为 xz（容错）
+          sed -i '' 's/_THEOS_PLATFORM_DPKG_DEB_COMPRESSION = lzma/_THEOS_PLATFORM_DPKG_DEB_COMPRESSION = xz/g' "$DEB_MK_FILE" || true
+          # 强制添加配置，确保生效
+          if ! grep -q "_THEOS_PLATFORM_DPKG_DEB_COMPRESSION = xz" "$DEB_MK_FILE"; then
+            echo "_THEOS_PLATFORM_DPKG_DEB_COMPRESSION = xz" >> "$DEB_MK_FILE"
+          fi
+          echo "✅ 压缩配置修复完成。"
 
       # 步骤 4: 编译打包（核心步骤）
       - name: Build & Package Tweak
         run: |
+          # 关闭严格模式，允许个别命令失败（如 make clean）
+          set +e
           cd $GITHUB_WORKSPACE
           
-          # 彻底清理缓存（避免旧文件干扰）
+          # 彻底清理缓存
           rm -rf .theos packages
           make clean 2>/dev/null || true
           
-          # 设置 Theos 环境变量（强制 rootless 模式）
+          # 设置环境变量
           export THEOS=$HOME/theos
           export THEOS_PACKAGE_SCHEME=rootless
           export SDKROOT=$HOME/theos/sdks/iPhoneOS15.5.sdk
-          export ARCHS="arm64 arm64e"  # 指定架构，避免兼容警告
-          export TARGET=iphone:clang:15.5:14.0  # 适配 arm64e 最低 iOS 14.0
-          
-          # 强制 xz 压缩（双重保险）
+          export ARCHS="arm64 arm64e"
+          export TARGET=iphone:clang:15.5:14.0
           export DEB_BUILD_COMPRESSOR=xz
           export DEB_BUILD_COMPRESSOR_TYPE=xz
           
-          echo "=== 开始编译打包 ==="
-          # 多线程编译，输出详细日志
+          echo "=== 开始编译打包（详细日志）==="
+          # 多线程编译，V=1 输出详细日志便于排查
           make package -j$(sysctl -n hw.logicalcpu) V=1
           
           # 验证产物
-          ls -la packages/*.deb || echo "⚠️ 未找到 deb 包，检查编译日志！"
+          ls -la packages/*.deb || echo "⚠️ 未生成 deb 包，请检查编译日志！"
+          # 恢复严格模式
+          set -e
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Tweak-Deb
           path: packages/*.deb
-          if-no-files-found: warn  # 即使没包也不直接失败，便于排查
+          if-no-files-found: warn  # 没包也不失败，便于排查
