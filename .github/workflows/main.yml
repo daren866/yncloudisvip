@@ -30,7 +30,10 @@ jobs:
        - name: Build Tweak
         run: |
           cd $GITHUB_WORKSPACE
-          
+               # 1. 彻底清除 Theos 的构建缓存，确保读取新配置
+              rm -rf .theos
+              # 2. 执行标准清理
+              make clean || true
           # 设置环境变量
           export THEOS=$HOME/theos
           export THEOS_PACKAGE_SCHEME=rootless
