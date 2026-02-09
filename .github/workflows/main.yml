@@ -7,81 +7,107 @@ on:
 jobs:
   build:
     runs-on: macos-14
-    timeout-minutes: 20
-    continue-on-error: true
+    timeout-minutes: 30
 
     steps:
-      # 步骤0：强制创建日志
-      - name: Create Log File
-        run: |
-          LOG_DIR="/Users/runner/work/yncloudisvip/yncloudisvip/workflow-logs"
-          MAIN_LOG="${LOG_DIR}/error.log"
-          
-          # 创建目录和日志文件
-          mkdir -p "${LOG_DIR}"
-          touch "${MAIN_LOG}"
-          
-          echo "LOG_FILE=${MAIN_LOG}" >> $GITHUB_ENV
-          echo "=== Workflow Start: $(date) ===" > "${MAIN_LOG}"
-          echo "✅ 日志创建成功：${MAIN_LOG}" >> "${MAIN_LOG}"
-        continue-on-error: true
-
-      # 步骤1：Git配置 + 拉取主仓库
-      - name: Git Setup & Checkout
-        run: |
-          LOG_FILE="${{ env.LOG_FILE }}"
-          git config --global credential.helper "false"
-          git config --global url."https://github.com/".insteadOf git@github.com:
-          echo "✅ Git配置完成" >> "${LOG_FILE}"
-        continue-on-error: true
-      
+      # 步骤1：检出代码（第一步做）
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
-        continue-on-error: true
 
-      # 步骤2：安装Xcode命令行工具和基础工具
+      # 步骤2：创建日志文件
+      - name: Create Log File
+        run: |
+          # 使用GitHub Actions的工作空间变量
+          WORKSPACE="${{ github.workspace }}"
+          LOG_DIR="${WORKSPACE}/workflow-logs"
+          LOG_FILE="${LOG_DIR}/error.log"
+          
+          # 创建目录和文件
+          mkdir -p "${LOG_DIR}"
+          touch "${LOG_FILE}"
+          
+          # 写入初始日志
+          echo "=== Workflow Start: $(date) ===" > "${LOG_FILE}"
+          echo "✅ 日志创建成功：${LOG_FILE}" >> "${LOG_FILE}"
+          
+          # 设置环境变量
+          echo "LOG_FILE=${LOG_FILE}" >> $GITHUB_ENV
+          echo "WORKSPACE=${WORKSPACE}" >> $GITHUB_ENV
+
+      # 步骤3：Git配置
+      - name: Git Setup
+        run: |
+          # 先确保日志文件存在
+          WORKSPACE="${{ env.WORKSPACE }}"
+          LOG_FILE="${{ env.LOG_FILE }}"
+          
+          if [ ! -f "${LOG_FILE}" ]; then
+            LOG_FILE="${WORKSPACE}/workflow-logs/error.log"
+            touch "${LOG_FILE}"
+            echo "LOG_FILE=${LOG_FILE}" >> $GITHUB_ENV
+          fi
+          
+          # Git配置
+          git config --global credential.helper "false"
+          git config --global url."https://github.com/".insteadOf git@github.com:
+          echo "✅ Git配置完成" >> "${LOG_FILE}"
+
+      # 步骤4：安装Xcode命令行工具和基础工具
       - name: Install Xcode and Tools
         run: |
           LOG_FILE="${{ env.LOG_FILE }}"
           
-          # 安装Xcode命令行工具
-          sudo xcode-select --install 2>&1 >> "${LOG_FILE}" || true
+          echo "=== 安装Xcode和工具 ===" >> "${LOG_FILE}"
+          
+          # 检查Xcode
+          if ! xcode-select -p &>/dev/null; then
+            echo "安装Xcode命令行工具..." >> "${LOG_FILE}"
+            sudo xcode-select --install 2>&1 >> "${LOG_FILE}" || echo "Xcode可能已安装" >> "${LOG_FILE}"
+          fi
           
           # 设置Xcode路径
           sudo xcode-select --switch /Applications/Xcode.app 2>&1 >> "${LOG_FILE}" || true
-          
-          # 接受许可协议
           sudo xcodebuild -license accept 2>&1 >> "${LOG_FILE}"
           
           # 安装Homebrew工具
+          echo "安装Homebrew工具..." >> "${LOG_FILE}"
           brew update 2>&1 >> "${LOG_FILE}"
           brew install ldid dpkg git curl wget make 2>&1 >> "${LOG_FILE}"
           
           echo "✅ Xcode和工具安装完成" >> "${LOG_FILE}"
-        continue-on-error: true
 
-      # 步骤3：获取macOS SDK路径
-      - name: Get macOS SDK Path
+      # 步骤5：获取SDK路径
+      - name: Get SDK Paths
         run: |
           LOG_FILE="${{ env.LOG_FILE }}"
           
-          # 获取macOS SDK路径（用于mach-o头文件）
-          MACOS_SDK_PATH=$(xcrun --sdk macosx --show-sdk-path 2>&1 | head -1)
+          echo "=== 获取SDK路径 ===" >> "${LOG_FILE}"
           
+          # 获取macOS SDK路径
+          MACOS_SDK_PATH=$(xcrun --sdk macosx --show-sdk-path 2>/dev/null || echo "")
           if [ -n "$MACOS_SDK_PATH" ] && [ -d "$MACOS_SDK_PATH" ]; then
             echo "MACOS_SDK_PATH=${MACOS_SDK_PATH}" >> $GITHUB_ENV
             echo "✅ 获取到macOS SDK路径: ${MACOS_SDK_PATH}" >> "${LOG_FILE}"
           else
             echo "❌ 无法获取macOS SDK路径" >> "${LOG_FILE}"
           fi
-        continue-on-error: true
+          
+          # 获取iOS SDK路径
+          IOS_SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null || echo "")
+          if [ -n "$IOS_SDK_PATH" ] && [ -d "$IOS_SDK_PATH" ]; then
+            echo "IOS_SDK_PATH=${IOS_SDK_PATH}" >> $GITHUB_ENV
+            echo "✅ 获取到iOS SDK路径: ${IOS_SDK_PATH}" >> "${LOG_FILE}"
+          else
+            echo "⚠️ 无法获取iOS SDK路径，将使用下载的SDK" >> "${LOG_FILE}"
+          fi
 
-      # 步骤4：安装和配置Theos
+      # 步骤6：安装和配置Theos
       - name: Setup Theos
         run: |
           LOG_FILE="${{ env.LOG_FILE }}"
-          set +e
+          
+          echo "=== 安装Theos ===" >> "${LOG_FILE}"
           
           # 清理旧环境
           rm -rf ~/theos ~/ellekit ~/iOS-SDKs
@@ -97,33 +123,23 @@ jobs:
           # 创建sdks目录
           mkdir -p ~/theos/sdks
           
-          # 复制完整的SDK（包含所有头文件）
+          # 复制完整的SDK
           if [ -d ~/iOS-SDKs/iPhoneOS14.4.sdk ]; then
             echo "复制iPhoneOS14.4.sdk..." >> "${LOG_FILE}"
             cp -r ~/iOS-SDKs/iPhoneOS14.4.sdk ~/theos/sdks/
-            
-            # 检查SDK完整性
-            SDK_PATH=~/theos/sdks/iPhoneOS14.4.sdk
-            if [ -d "$SDK_PATH/System/Library/Frameworks/CoreFoundation.framework" ]; then
-              echo "✅ SDK包含CoreFoundation.framework" >> "${LOG_FILE}"
-            else
-              echo "❌ SDK缺少CoreFoundation.framework" >> "${LOG_FILE}"
-            fi
-            
-            if [ -d "$SDK_PATH/usr/include" ]; then
-              echo "✅ SDK包含usr/include目录" >> "${LOG_FILE}"
-            else
-              echo "❌ SDK缺少usr/include目录" >> "${LOG_FILE}"
-            fi
+          elif [ -d ~/iOS-SDKs/iPhoneOS15.5.sdk ]; then
+            echo "复制iPhoneOS15.5.sdk..." >> "${LOG_FILE}"
+            cp -r ~/iOS-SDKs/iPhoneOS15.5.sdk ~/theos/sdks/
           fi
           
           echo "✅ Theos安装完成" >> "${LOG_FILE}"
-        continue-on-error: true
 
-      # 步骤5：安装和配置Ellekit
+      # 步骤7：安装和配置Ellekit
       - name: Setup Ellekit
         run: |
           LOG_FILE="${{ env.LOG_FILE }}"
+          
+          echo "=== 安装Ellekit ===" >> "${LOG_FILE}"
           
           # 克隆Ellekit
           git clone --depth 1 https://github.com/tealbathingsuit/ellekit.git ~/ellekit 2>&1 >> "${LOG_FILE}"
@@ -143,12 +159,13 @@ jobs:
           fi
           
           echo "✅ Ellekit安装完成" >> "${LOG_FILE}"
-        continue-on-error: true
 
-      # 步骤6：修复头文件问题
+      # 步骤8：修复头文件问题
       - name: Fix Header Issues
         run: |
           LOG_FILE="${{ env.LOG_FILE }}"
+          
+          echo "=== 修复头文件问题 ===" >> "${LOG_FILE}"
           
           # 获取macOS SDK路径
           MACOS_SDK_PATH="${{ env.MACOS_SDK_PATH }}"
@@ -157,67 +174,22 @@ jobs:
           # 如果macOS SDK存在，复制mach-o头文件
           if [ -n "$MACOS_SDK_PATH" ] && [ -d "$MACOS_SDK_PATH/usr/include/mach-o" ]; then
             echo "复制mach-o头文件..." >> "${LOG_FILE}"
-            
-            # 创建目录
             mkdir -p $THEOS_PATH/include/mach-o
-            
-            # 复制mach-o头文件
             cp -r "$MACOS_SDK_PATH/usr/include/mach-o/"* $THEOS_PATH/include/mach-o/ 2>&1 >> "${LOG_FILE}"
             echo "✅ mach-o头文件复制完成" >> "${LOG_FILE}"
-          else
-            echo "⚠️ 无法获取macOS SDK或缺少mach-o头文件" >> "${LOG_FILE}"
-          fi
-          
-          # 修复SDK中的头文件链接
-          SDK_PATH=~/theos/sdks/iPhoneOS14.4.sdk
-          if [ -d "$SDK_PATH" ]; then
-            echo "修复SDK头文件链接..." >> "${LOG_FILE}"
-            
-            # 确保usr/include目录存在
-            if [ ! -d "$SDK_PATH/usr/include" ]; then
-              mkdir -p "$SDK_PATH/usr/include"
-            fi
-            
-            # 如果缺少mach-o目录，从macOS SDK复制
-            if [ ! -d "$SDK_PATH/usr/include/mach-o" ] && [ -d "$THEOS_PATH/include/mach-o" ]; then
-              cp -r "$THEOS_PATH/include/mach-o" "$SDK_PATH/usr/include/"
-              echo "✅ 复制mach-o头文件到SDK" >> "${LOG_FILE}"
-            fi
-            
-            # 检查关键头文件
-            echo "检查关键头文件：" >> "${LOG_FILE}"
-            
-            # CoreFoundation.h
-            if find "$SDK_PATH" -name "CoreFoundation.h" 2>/dev/null | head -1; then
-              echo "✅ 找到CoreFoundation.h" >> "${LOG_FILE}"
-            else
-              echo "❌ 未找到CoreFoundation.h" >> "${LOG_FILE}"
-            fi
-            
-            # Foundation.h
-            if find "$SDK_PATH" -name "Foundation.h" 2>/dev/null | head -1; then
-              echo "✅ 找到Foundation.h" >> "${LOG_FILE}"
-            else
-              echo "❌ 未找到Foundation.h" >> "${LOG_FILE}"
-            fi
-            
-            # nlist.h
-            if find "$SDK_PATH" -name "nlist.h" 2>/dev/null | head -1; then
-              echo "✅ 找到nlist.h" >> "${LOG_FILE}"
-            else
-              echo "❌ 未找到nlist.h" >> "${LOG_FILE}"
-            fi
           fi
           
           echo "✅ 头文件修复完成" >> "${LOG_FILE}"
-        continue-on-error: true
 
-      # 步骤7：编译打包
+      # 步骤9：编译打包
       - name: Build Package
-        shell: /bin/bash
         run: |
           LOG_FILE="${{ env.LOG_FILE }}"
-          set +e
+          WORKSPACE="${{ env.WORKSPACE }}"
+          
+          echo "=== 编译打包 ===" >> "${LOG_FILE}"
+          
+          cd "${WORKSPACE}"
           
           # 修复deb.mk
           DEB_MK=~/theos/makefiles/package/deb.mk
@@ -226,52 +198,70 @@ jobs:
             echo "✅ deb.mk修复完成" >> "${LOG_FILE}"
           fi
           
-          # 编译配置
-          cd /Users/runner/work/yncloudisvip/yncloudisvip || exit 0
+          # 清理旧构建
           rm -rf .theos packages
           
+          # 设置环境变量
           export THEOS=~/theos
           export ARCHS=arm64
           export TARGET=iphone:clang:14.4:10.0
           export THEOS_PACKAGE_SCHEME=rootless
-          export SDKROOT=~/theos/sdks/iPhoneOS14.4.sdk
           
-          # 如果SDK不存在，尝试其他版本
-          if [ ! -d "${SDKROOT}" ]; then
+          # 设置SDK路径 - 优先使用Xcode自带的SDK
+          IOS_SDK_PATH="${{ env.IOS_SDK_PATH }}"
+          if [ -n "$IOS_SDK_PATH" ] && [ -d "$IOS_SDK_PATH" ]; then
+            export SDKROOT="$IOS_SDK_PATH"
+            echo "✅ 使用Xcode iOS SDK: $SDKROOT" >> "${LOG_FILE}"
+          elif [ -d ~/theos/sdks/iPhoneOS14.4.sdk ]; then
+            export SDKROOT=~/theos/sdks/iPhoneOS14.4.sdk
+            echo "✅ 使用下载的iOS SDK 14.4" >> "${LOG_FILE}"
+          elif [ -d ~/theos/sdks/iPhoneOS15.5.sdk ]; then
             export SDKROOT=~/theos/sdks/iPhoneOS15.5.sdk
+            echo "✅ 使用下载的iOS SDK 15.5" >> "${LOG_FILE}"
+          else
+            echo "❌ 未找到可用的SDK" >> "${LOG_FILE}"
+            exit 1
           fi
           
           # Ellekit依赖
-          export CFLAGS="-Wno-error -fobjc-arc -I~/theos/vendor/ellekit/include"
-          export LDFLAGS="-Wl,-dead_strip -L~/theos/vendor/ellekit/lib -lEllekit"
+          export CFLAGS="-Wno-error -fobjc-arc"
+          if [ -d ~/theos/vendor/ellekit/include ]; then
+            export CFLAGS="$CFLAGS -I~/theos/vendor/ellekit/include"
+          fi
           
-          # 添加macOS SDK的头文件路径到编译选项
+          export LDFLAGS="-Wl,-dead_strip"
+          if [ -d ~/theos/vendor/ellekit/lib ]; then
+            export LDFLAGS="$LDFLAGS -L~/theos/vendor/ellekit/lib -lEllekit"
+          fi
+          
+          # 添加macOS SDK路径到编译选项
           MACOS_SDK_PATH="${{ env.MACOS_SDK_PATH }}"
           if [ -n "$MACOS_SDK_PATH" ]; then
             export CFLAGS="$CFLAGS -I$MACOS_SDK_PATH/usr/include"
           fi
           
           # 生成control文件
-          cat > control << EOF
-            Package: com.yncloudnote.vip.tweak
-            Name: YNCloudNoteVIP
-            Version: 0.0.1-1
-            Architecture: iphoneos-arm
-            Description: YoudaoNote VIP Tweak
-            Author: Your Name
-            Maintainer: Your Name
-            Section: Tweaks
-            Depends: ellekit (>= 1.0)
-            Rootless: yes
-          EOF
+          echo "Package: com.yncloudnote.vip.tweak" > control
+          echo "Name: YNCloudNoteVIP" >> control
+          echo "Version: 1.0.0" >> control
+          echo "Architecture: iphoneos-arm64" >> control
+          echo "Description: YoudaoNote VIP Tweak" >> control
+          echo "Author: Your Name" >> control
+          echo "Maintainer: Your Name" >> control
+          echo "Section: Tweaks" >> control
+          echo "Depends: ellekit" >> control
+          echo "Rootless: true" >> control
           
           # 执行打包
           echo "开始编译..." >> "${LOG_FILE}"
           echo "SDKROOT: $SDKROOT" >> "${LOG_FILE}"
           echo "CFLAGS: $CFLAGS" >> "${LOG_FILE}"
-          echo "LDFLAGS: $LDFLAGS" >> "${LOG_FILE}"
           
-          make package V=2 2>&1 >> "${LOG_FILE}"
+          make package 2>&1 >> "${LOG_FILE}" || {
+            echo "❌ 构建失败" >> "${LOG_FILE}"
+            echo "最后50行日志：" >> "${LOG_FILE}"
+            tail -50 "${LOG_FILE}" >> "${LOG_FILE}"
+          }
           
           # 检查结果
           if ls packages/*.deb 1>/dev/null 2>&1; then
@@ -279,26 +269,27 @@ jobs:
             ls -la packages/*.deb >> "${LOG_FILE}"
           else
             echo "❌ 构建失败，未生成deb包" >> "${LOG_FILE}"
-            echo "编译日志：" >> "${LOG_FILE}"
-            tail -50 "${LOG_FILE}" | grep -A 50 "error:\|Error:\|fatal error:" >> "${LOG_FILE}"
           fi
-        continue-on-error: true
 
-      # 步骤8：上传产物
+      # 步骤10：上传产物
       - name: Upload Artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: Build-Output
           path: |
-            /Users/runner/work/yncloudisvip/yncloudisvip/packages/*.deb
-            /Users/runner/work/yncloudisvip/yncloudisvip/workflow-logs/error.log
+            ${{ github.workspace }}/packages/*.deb
+            ${{ github.workspace }}/workflow-logs/error.log
           if-no-files-found: warn
-        continue-on-error: true
+          retention-days: 7
 
-      # 步骤9：强制成功
-      - name: Force Success
-        run: |
-          LOG_FILE="${{ env.LOG_FILE }}"
-          echo "✅ Workflow completed at $(date)" >> "${LOG_FILE}"
-          exit 0
-        continue-on-error: true
+      # 步骤11：上传详细日志
+      - name: Upload Detailed Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Detailed-Logs
+          path: |
+            ${{ github.workspace }}/workflow-logs/
+          if-no-files-found: ignore
+          retention-days: 7
